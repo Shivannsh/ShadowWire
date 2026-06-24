@@ -1,0 +1,12 @@
+secret_salt      = "42"
+kyc_tier         = "2"
+sanctioned_flag  = "0"
+country_code     = "91"
+merkle_siblings  = ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0"]
+merkle_index     = "0"
+depositor_pubkey = "1"
+merkle_root   = "0x04cb8cd7088dfd9b428e728e60afdc55a6b5fff80144db7c497ef79d014a5211"
+corridor_id   = "1"
+min_kyc_tier  = "1"
+max_amount    = "1000000"
+amount        = "500"

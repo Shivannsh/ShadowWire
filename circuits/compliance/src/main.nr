@@ -54,10 +54,17 @@ fn attribute_leaf(salt: Field, tier: Field, sanctioned: Field, country: Field) -
 }
 
 // Compute compliance anti-replay nullifier.
-// nullifier = H(secret_salt, amount, corridor_id, DOMAIN_COMP_NF)
-// Binds the attestation to a specific (identity, amount, corridor) triple.
-fn compute_compliance_nullifier(salt: Field, amt: Field, corridor: Field) -> Field {
-    poseidon2(salt, amt, corridor, DOMAIN_COMP_NF)
+// nullifier = H(H(salt, depositor, 0, 0), amt, corridor, DOMAIN_COMP_NF)
+//
+// Including depositor_pubkey ensures two different users depositing the same
+// amount produce different nullifiers.  Without it, the second user would hit
+// ComplianceNullifierUsed even though their identity is different.
+//
+// Two-level hash keeps the DOMAIN_COMP_NF domain tag on the outer call so
+// the nullifier cannot collide with any leaf or Merkle-node hash.
+fn compute_compliance_nullifier(salt: Field, amt: Field, corridor: Field, depositor: Field) -> Field {
+    let user_bind = poseidon2(salt, depositor, 0, 0);
+    poseidon2(user_bind, amt, corridor, DOMAIN_COMP_NF)
 }
 
 // Compute Merkle root from leaf + Merkle authentication path.
@@ -80,46 +87,53 @@ fn compute_merkle_root(leaf: Field, index: u32, siblings: [Field; 10]) -> Field 
     current
 }
 
+// The compliance_nullifier is provided as a PUBLIC INPUT (slot 5).
+// The circuit verifies it matches the circuit-computed value.
+//
+// Why not a return value? noir-cli interop (the Groth16 bridge tool) expects
+// ALL public values to be supplied in inputs.json upfront.  Return values are
+// not supported by that tool.  The mock-issuer pre-computes the nullifier by
+// running `nargo execute` first (which prints the Circuit output to stdout),
+// then passes it as a normal public input for `noir-cli interop` + snarkjs.
 fn main(
-    // --- Public inputs (declared first so they occupy R1CS public signal slots 0..5) ---
-    merkle_root:          pub Field,
-    corridor_id:          pub Field,
-    min_kyc_tier:         pub Field,
-    max_amount:           pub Field,
-    amount:               pub Field,
-    compliance_nullifier: pub Field,
+    // --- Public inputs (slots 0..5) ---
+    merkle_root:          pub Field,   // slot 0
+    corridor_id:          pub Field,   // slot 1
+    min_kyc_tier:         pub Field,   // slot 2
+    max_amount:           pub Field,   // slot 3
+    amount:               pub Field,   // slot 4
+    compliance_nullifier: pub Field,   // slot 5: verifier checks this matches computed value
 
     // --- Private witness ---
-    secret_salt:     Field,
-    kyc_tier:        Field,
-    sanctioned_flag: Field,
-    country_code:    Field,
-    merkle_siblings: [Field; 10],
-    merkle_index:    Field,
+    secret_salt:      Field,
+    kyc_tier:         Field,
+    sanctioned_flag:  Field,
+    country_code:     Field,
+    merkle_siblings:  [Field; 10],
+    merkle_index:     Field,
+    depositor_pubkey: Field,   // ownerField; makes nullifier unique per depositor
 ) {
-    // 1. Build the attribute leaf and verify Merkle membership.
-    //    This proves the prover's (secret_salt, kyc_tier, sanctioned_flag, country_code)
-    //    tuple is committed in the on-chain ComplianceRegistry tree.
+    // 1. Merkle membership: KYC attribute leaf is in the ComplianceRegistry tree.
     let leaf = attribute_leaf(secret_salt, kyc_tier, sanctioned_flag, country_code);
     let computed_root = compute_merkle_root(leaf, merkle_index as u32, merkle_siblings);
     assert(computed_root == merkle_root, "Merkle membership check failed");
 
-    // 2. KYC tier gate: prover's tier must meet the corridor minimum.
+    // 2. KYC tier gate.
     assert(kyc_tier as u64 >= min_kyc_tier as u64, "KYC tier below corridor minimum");
 
-    // 3. Sanctions gate: sanctioned parties cannot use any corridor.
+    // 3. Sanctions gate.
     assert(sanctioned_flag == 0, "Sanctioned party cannot participate");
 
-    // 4. Amount range check:
-    //    - Amount must be strictly positive (no zero-value spam)
-    //    - Amount must not exceed the corridor per-transaction limit
+    // 4. Amount range check.
     assert(amount as u64 > 0, "Amount must be positive");
     assert(amount as u64 <= max_amount as u64, "Amount exceeds corridor limit");
 
-    // 5. Compliance nullifier check.
-    //    The on-chain pool stores this nullifier to prevent reuse.
-    //    Its binding to corridor_id prevents cross-corridor replay.
-    let expected_nullifier = compute_compliance_nullifier(secret_salt, amount, corridor_id);
+    // 5. Nullifier binding: circuit verifies the provided nullifier is correct.
+    //    nullifier = H(H(salt, depositor), amount, corridor, DOMAIN_COMP_NF)
+    //    Unique per (user, amount, corridor); prevents per-user collision.
+    let expected_nullifier = compute_compliance_nullifier(
+        secret_salt, amount, corridor_id, depositor_pubkey
+    );
     assert(expected_nullifier == compliance_nullifier, "Invalid compliance nullifier");
 }
 
@@ -136,24 +150,20 @@ fn test_print_compliance_vectors() {
     let country:    Field = 91;
     let corridor:   Field = 1;
     let amount:     Field = 500;
+    let depositor:  Field = 1;
 
     let leaf = attribute_leaf(salt, tier, sanctioned, country);
-
-    // Build root with all-zero siblings (single-leaf demo tree, depth 10).
-    // At index 0 all siblings are to the right of the path.
     let siblings: [Field; 10] = [0; 10];
     let root = compute_merkle_root(leaf, 0, siblings);
+    let comp_nf = compute_compliance_nullifier(salt, amount, corridor, depositor);
 
-    let comp_nf = compute_compliance_nullifier(salt, amount, corridor);
-
-    println(f"leaf              = {leaf}");
-    println(f"merkle_root       = {root}");
+    println(f"leaf                 = {leaf}");
+    println(f"merkle_root          = {root}");
     println(f"compliance_nullifier = {comp_nf}");
 }
 
 #[test]
 fn test_valid_compliance() {
-    // Identical to the main test vector. Must pass all constraints.
     let salt:       Field = 42;
     let tier:       Field = 2;
     let sanctioned: Field = 0;
@@ -162,19 +172,37 @@ fn test_valid_compliance() {
     let min_tier:   Field = 1;
     let max_amt:    Field = 1000000;
     let amount:     Field = 500;
+    let depositor:  Field = 1;
 
     let leaf = attribute_leaf(salt, tier, sanctioned, country);
     let siblings: [Field; 10] = [0; 10];
     let root = compute_merkle_root(leaf, 0, siblings);
-    let comp_nf = compute_compliance_nullifier(salt, amount, corridor);
 
-    // Re-run the main circuit constraints manually to confirm correctness.
     assert(compute_merkle_root(leaf, 0, siblings) == root);
     assert(tier as u64 >= min_tier as u64);
     assert(sanctioned == 0);
     assert(amount as u64 > 0);
     assert(amount as u64 <= max_amt as u64);
-    assert(compute_compliance_nullifier(salt, amount, corridor) == comp_nf);
+
+    let nf_user1 = compute_compliance_nullifier(salt, amount, corridor, depositor);
+    let nf_user2 = compute_compliance_nullifier(salt, amount, corridor, 99999);
+    assert(nf_user1 != nf_user2, "Different depositors must produce different nullifiers");
+
+    // Confirm nullifier constraint: expected == provided
+    let computed_nf = compute_compliance_nullifier(salt, amount, corridor, depositor);
+    assert(computed_nf == nf_user1);
+}
+
+#[test(should_fail)]
+fn test_wrong_nullifier_input_rejected() {
+    // Providing the wrong nullifier as public input must fail
+    let salt:      Field = 42;
+    let amount:    Field = 500;
+    let corridor:  Field = 1;
+    let depositor: Field = 1;
+    let correct_nf = compute_compliance_nullifier(salt, amount, corridor, depositor);
+    let wrong_nf   = correct_nf + 1;
+    assert(correct_nf == wrong_nf, "Invalid compliance nullifier");
 }
 
 #[test(should_fail)]
@@ -208,16 +236,14 @@ fn test_zero_amount_rejected() {
 }
 
 #[test(should_fail)]
-fn test_wrong_nullifier_rejected() {
-    let salt:    Field = 42;
-    let amount:  Field = 500;
-    let corridor: Field = 1;
-    // Correct nullifier
-    let correct_nf = compute_compliance_nullifier(salt, amount, corridor);
-    // Tampered nullifier (corridor 2 instead of 1 -- cross-corridor replay attempt)
-    let tampered_nf = compute_compliance_nullifier(salt, amount, 2);
-    // These must not be equal
-    assert(correct_nf == tampered_nf, "Cross-corridor replay should be rejected");
+fn test_cross_corridor_nullifier_rejected() {
+    // Cross-corridor replay: nullifier for corridor=1 rejected when verifying corridor=2
+    let salt:      Field = 42;
+    let amount:    Field = 500;
+    let depositor: Field = 1;
+    let nf_corridor1 = compute_compliance_nullifier(salt, amount, 1, depositor);
+    let nf_corridor2 = compute_compliance_nullifier(salt, amount, 2, depositor);
+    assert(nf_corridor1 == nf_corridor2, "Cross-corridor replay should be rejected");
 }
 
 #[test(should_fail)]

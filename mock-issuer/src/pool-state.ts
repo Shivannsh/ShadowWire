@@ -9,6 +9,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
@@ -152,41 +153,72 @@ export function computeMerklePath(
   leaves: string[],  // the pool's current commitment list
   targetIdx: number  // which leaf we want the path for
 ): MerklePath {
-  const proverToml = path.join(TREE_UTIL_DIR, "Prover.toml");
-  const verifierToml = path.join(TREE_UTIL_DIR, "Verifier.toml");
+  // Use a unique temp directory per invocation to prevent race conditions when
+  // multiple proof requests arrive concurrently.  Each request gets its own
+  // Prover.toml and nargo process without interfering with others.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shadowwire-tree-"));
 
-  // Pad leaves array to exactly 256 elements with "0" (zero Field element)
-  const padded = [...leaves];
-  while (padded.length < 256) padded.push("0");
-  if (padded.length > 256) {
-    throw new Error(`Pool exceeds max tree size of 256 (got ${padded.length})`);
+  try {
+    // Copy Nargo.toml and src/ into the temp dir so nargo can find the circuit
+    execSync(`cp -r "${TREE_UTIL_DIR}/Nargo.toml" "${TREE_UTIL_DIR}/src" "${tmpDir}/"`, {
+      stdio: "pipe",
+    });
+
+    const proverToml = path.join(tmpDir, "Prover.toml");
+
+    // Pad leaves array to exactly 256 elements with "0" (zero Field element)
+    const padded = [...leaves];
+    while (padded.length < 256) padded.push("0");
+    if (padded.length > 256) {
+      throw new Error(`Pool exceeds max tree size of 256 (got ${padded.length})`);
+    }
+
+    const leavesStr = padded.map(l => `"${l}"`).join(", ");
+    const toml = `target_idx = "${targetIdx}"\nleaves = [${leavesStr}]`;
+    fs.writeFileSync(proverToml, toml);
+
+    // nargo execute prints the return value to stdout as:
+    //   Circuit output: (0xROOT, [0xS0, 0xS1, 0xS2, 0xS3, 0xS4, 0xS5, 0xS6, 0xS7])
+    const stdout = execSync(`"${NARGO}" execute`, {
+      cwd: tmpDir,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    // nargo output includes other log lines; isolate the one with our result
+    const outputLine = stdout
+      .split("\n")
+      .find((l: string) => l.includes("Circuit output:"));
+    if (!outputLine) {
+      throw new Error(`tree_builder: 'Circuit output:' not found in nargo output:\n${stdout}`);
+    }
+
+  // Format: Circuit output: (0xROOT, [0xS0, 0xS1, ..., 0xS7])
+    // Extract root: first hex after the opening paren
+    const rootMatch = outputLine.match(/Circuit output:\s*\((0x[0-9a-fA-F]+)/);
+    if (!rootMatch) {
+      throw new Error(`tree_builder: could not parse root from: ${outputLine}`);
+    }
+    const root = rootMatch[1];
+
+    // Extract sibling array: content between the inner [ and ]
+    const sibsMatch = outputLine.match(/\[([^\]]+)\]/);
+    if (!sibsMatch) {
+      throw new Error(`tree_builder: could not parse siblings from: ${outputLine}`);
+    }
+    const siblings = sibsMatch[1]
+      .split(",")
+      .map(s => s.trim());
+
+    if (siblings.length !== 8) {
+      throw new Error(`tree_builder: expected 8 siblings, got ${siblings.length}\nLine: ${outputLine}`);
+    }
+
+    return { root, siblings, index: targetIdx };
+  } finally {
+    // Always clean up the temp directory
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
-
-  const leavesStr = padded.map(l => `"${l}"`).join(", ");
-  const toml = `target_idx = "${targetIdx}"\nleaves = [${leavesStr}]`;
-  fs.writeFileSync(proverToml, toml);
-
-  execSync(`"${NARGO}" execute`, { cwd: TREE_UTIL_DIR, stdio: "pipe" });
-
-  const verifier = fs.readFileSync(verifierToml, "utf8");
-
-  // Verifier.toml format:
-  //   return_value = ["0x<root>", ["0x<s0>", "0x<s1>", ..., "0x<s7>"]]
-  const rootMatch = verifier.match(/return_value\s*=\s*\["([^"]+)"/);
-  if (!rootMatch) throw new Error("tree_builder: could not parse root from Verifier.toml");
-  const root = rootMatch[1];
-
-  const sibsMatch = verifier.match(/\[([^\]]+)\]\s*\]/);
-  if (!sibsMatch) throw new Error("tree_builder: could not parse siblings from Verifier.toml");
-  const siblings = sibsMatch[1]
-    .split(",")
-    .map(s => s.trim().replace(/^"|"$/g, ""));
-
-  if (siblings.length !== 8) {
-    throw new Error(`tree_builder: expected 8 siblings, got ${siblings.length}`);
-  }
-
-  return { root, siblings, index: targetIdx };
 }
 
 // ---------------------------------------------------------------------------

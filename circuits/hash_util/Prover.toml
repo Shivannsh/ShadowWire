@@ -1,0 +1,13 @@
+owner_pubkey    = "1"
+value           = "1000"
+asset_id        = "3"
+blinding_factor = "7"
+note_secret_key = "13"
+merkle_index    = "0"
+merkle_siblings = ["0", "0", "0", "0", "0", "0", "0", "0"]
+recipient_pubkey   = "2"
+output_value_1     = "900"
+output_blinding_1  = "11"
+sender_pubkey      = "1"
+output_value_2     = "90"
+output_blinding_2  = "17"

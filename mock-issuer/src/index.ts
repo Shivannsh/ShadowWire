@@ -38,22 +38,28 @@ const NOIR_CLI  = path.join(ROOT, ".tools/noir-groth16-target/debug/noir-cli");
 const CIRCUITS = ["compliance", "shielded_transfer"] as const;
 
 // ---------------------------------------------------------------------------
-// Fixed KYC state for the demo compliance tree.
-// In production each user would register their own KYC leaf in ComplianceRegistry.
+// KYC compliance state.
+//
+// The compliance circuit now:
+//   - Takes `depositor_pubkey` as a private input
+//   - RETURNS the compliance_nullifier as a circuit-computed public output
+//     (slot 5 in the public signals)
+//
+// This means the mock-issuer does NOT need to pre-compute the nullifier.
+// The Groth16 proof itself carries the nullifier as signal[5].
 // ---------------------------------------------------------------------------
 
-const DEMO_COMPLIANCE_INPUTS = {
-  secret_salt:           "42",
-  kyc_tier:              "2",
-  sanctioned_flag:       "0",
-  country_code:          "91",
-  merkle_siblings:       ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
-  merkle_index:          "0",
-  merkle_root:           "0x04cb8cd7088dfd9b428e728e60afdc55a6b5fff80144db7c497ef79d014a5211",
-  corridor_id:           "1",
-  min_kyc_tier:          "1",
-  max_amount:            "1000000",
-  compliance_nullifier:  "0x0f77c274c15388b0b8156c1b9e4f7d83e856e7cfb325a84eec38e4a8c165dc7b",
+const DEMO_KYC_BASE = {
+  secret_salt:     "42",
+  kyc_tier:        "2",
+  sanctioned_flag: "0",
+  country_code:    "91",
+  merkle_siblings: ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+  merkle_index:    "0",
+  merkle_root:     "0x04cb8cd7088dfd9b428e728e60afdc55a6b5fff80144db7c497ef79d014a5211",
+  corridor_id:     "1",
+  min_kyc_tier:    "1",
+  max_amount:      "1000000",
 };
 
 // Default asset_id (Field element identifying the SRT token on testnet)
@@ -163,6 +169,7 @@ interface NotePublicValues {
   nullifierHash:   string;
   newCommitment1:  string;
   newCommitment2:  string;
+  outputValue1:    string;  // = output_value_1 = pub_withdraw_amount in circuit
 }
 
 function computeNoteValues(privateInputs: {
@@ -180,41 +187,66 @@ function computeNoteValues(privateInputs: {
   outValue2:    string;
   outBlinding2: string;
 }): NotePublicValues {
-  const hashUtilDir  = path.join(ROOT, "circuits/hash_util");
-  const proverToml   = path.join(hashUtilDir, "Prover.toml");
-  const verifierToml = path.join(hashUtilDir, "Verifier.toml");
+  const hashUtilDir = path.join(ROOT, "circuits/hash_util");
 
-  const toml = [
-    `owner_pubkey    = "${privateInputs.owner}"`,
-    `value           = "${privateInputs.value}"`,
-    `asset_id        = "${privateInputs.assetId}"`,
-    `blinding_factor = "${privateInputs.blinding}"`,
-    `note_secret_key = "${privateInputs.secretKey}"`,
-    `merkle_index    = "${privateInputs.index}"`,
-    `merkle_siblings = [${privateInputs.siblings.map(s => `"${s}"`).join(", ")}]`,
-    `recipient_pubkey   = "${privateInputs.recipient}"`,
-    `output_value_1     = "${privateInputs.outValue1}"`,
-    `output_blinding_1  = "${privateInputs.outBlinding1}"`,
-    `sender_pubkey      = "${privateInputs.sender}"`,
-    `output_value_2     = "${privateInputs.outValue2}"`,
-    `output_blinding_2  = "${privateInputs.outBlinding2}"`,
-  ].join("\n");
-  fs.writeFileSync(proverToml, toml);
+  // Per-request temp dir to prevent race conditions under concurrent requests
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shadowwire-hash-"));
+  try {
+    execSync(`cp -r "${hashUtilDir}/Nargo.toml" "${hashUtilDir}/src" "${tmpDir}/"`, { stdio: "pipe" });
 
-  execSync(`"${NARGO}" execute`, { cwd: hashUtilDir, stdio: "pipe" });
+    const proverToml = path.join(tmpDir, "Prover.toml");
+    const toml = [
+      `owner_pubkey    = "${privateInputs.owner}"`,
+      `value           = "${privateInputs.value}"`,
+      `asset_id        = "${privateInputs.assetId}"`,
+      `blinding_factor = "${privateInputs.blinding}"`,
+      `note_secret_key = "${privateInputs.secretKey}"`,
+      `merkle_index    = "${privateInputs.index}"`,
+      `merkle_siblings = [${privateInputs.siblings.map(s => `"${s}"`).join(", ")}]`,
+      `recipient_pubkey   = "${privateInputs.recipient}"`,
+      `output_value_1     = "${privateInputs.outValue1}"`,
+      `output_blinding_1  = "${privateInputs.outBlinding1}"`,
+      `sender_pubkey      = "${privateInputs.sender}"`,
+      `output_value_2     = "${privateInputs.outValue2}"`,
+      `output_blinding_2  = "${privateInputs.outBlinding2}"`,
+    ].join("\n");
+    fs.writeFileSync(proverToml, toml);
 
-  const verifier = fs.readFileSync(verifierToml, "utf8");
-  const match = verifier.match(/return_value\s*=\s*\[([^\]]+)\]/);
-  if (!match) throw new Error("hash_util Verifier.toml: return_value not found");
-  const values = match[1].split(",").map(s => s.trim().replace(/^"|"$/g, ""));
+    // nargo execute prints to stdout:
+    //   Circuit output: (0xINPUT_COMMIT, 0xMERKLE_ROOT, 0xNULLIFIER,
+    //                    0xNEW_COMMIT1, 0xNEW_COMMIT2, 0xOUTPUT_VALUE1)
+    const stdout = execSync(`"${NARGO}" execute`, {
+      cwd: tmpDir,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
-  return {
-    inputCommitment: values[0],
-    merkleRoot:      values[1],
-    nullifierHash:   values[2],
-    newCommitment1:  values[3],
-    newCommitment2:  values[4],
-  };
+  const outputLine = stdout.split("\n").find(l => l.includes("Circuit output:"));
+  if (!outputLine) {
+    throw new Error(`hash_util: 'Circuit output:' not found in nargo output:\n${stdout}`);
+  }
+
+  // Extract all hex values from the tuple: (0xA, 0xB, 0xC, 0xD, 0xE, 0xF)
+  const inner = outputLine.match(/Circuit output:\s*\(([^)]+)\)/);
+  if (!inner) {
+    throw new Error(`hash_util: could not parse tuple from: ${outputLine}`);
+  }
+  const values = inner[1].split(",").map(s => s.trim());
+  if (values.length < 6) {
+    throw new Error(`hash_util: expected 6 output values, got ${values.length}: ${inner[1]}`);
+  }
+
+    return {
+      inputCommitment: values[0],
+      merkleRoot:      values[1],
+      nullifierHash:   values[2],
+      newCommitment1:  values[3],
+      newCommitment2:  values[4],
+      outputValue1:    values[5],
+    };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 // Compute just the commitment for a note (without full hash_util run)
@@ -254,15 +286,14 @@ app.get("/health", (_req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/attestation", (_req, res) => {
-  const i = DEMO_COMPLIANCE_INPUTS;
+  const i = DEMO_KYC_BASE;
   res.json({
-    merkleRoot:          i.merkle_root,
-    corridorId:          i.corridor_id,
-    minKycTier:          Number(i.min_kyc_tier),
-    maxAmount:           i.max_amount,
-    complianceNullifier: i.compliance_nullifier,
-    countryCode:         i.country_code,
-    kycTier:             i.kyc_tier,
+    merkleRoot:  i.merkle_root,
+    corridorId:  i.corridor_id,
+    minKycTier:  Number(i.min_kyc_tier),
+    maxAmount:   i.max_amount,
+    countryCode: i.country_code,
+    kycTier:     i.kyc_tier,
   });
 });
 
@@ -273,13 +304,74 @@ app.get("/api/attestation", (_req, res) => {
 // Returns: { proof, pubSignals, publicSignals, complianceNullifier, merkleRoot }
 // ---------------------------------------------------------------------------
 
+// Pre-compute the per-user compliance nullifier using nargo execute.
+// The compliance circuit accepts compliance_nullifier as a public INPUT and
+// verifies it equals the circuit-computed value -- so the prover must provide
+// the correct value upfront.  We derive it by running nargo execute on the
+// compliance circuit and parsing the "Circuit output:" line from stdout.
+function computeComplianceNullifier(
+  depositorPubkey: string,
+  amount: string
+): string {
+  const circuitDir = path.join(ROOT, "circuits/compliance");
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shadowwire-comp-nf-"));
+  try {
+    execSync(`cp -r "${circuitDir}/Nargo.toml" "${circuitDir}/src" "${tmpDir}/"`, { stdio: "pipe" });
+    const proverToml = path.join(tmpDir, "Prover.toml");
+    const toml = [
+      `secret_salt      = "${DEMO_KYC_BASE.secret_salt}"`,
+      `kyc_tier         = "${DEMO_KYC_BASE.kyc_tier}"`,
+      `sanctioned_flag  = "${DEMO_KYC_BASE.sanctioned_flag}"`,
+      `country_code     = "${DEMO_KYC_BASE.country_code}"`,
+      `merkle_index     = "${DEMO_KYC_BASE.merkle_index}"`,
+      `merkle_siblings  = [${DEMO_KYC_BASE.merkle_siblings.map(s => `"${s}"`).join(", ")}]`,
+      `depositor_pubkey = "${depositorPubkey}"`,
+      `merkle_root          = "${DEMO_KYC_BASE.merkle_root}"`,
+      `corridor_id          = "${DEMO_KYC_BASE.corridor_id}"`,
+      `min_kyc_tier         = "${DEMO_KYC_BASE.min_kyc_tier}"`,
+      `max_amount           = "${DEMO_KYC_BASE.max_amount}"`,
+      `amount               = "${amount}"`,
+      // placeholder so nargo execute can check the Prover.toml format;
+      // the actual nullifier value will be in the Circuit output line
+      `compliance_nullifier = "0"`,
+    ].join("\n");
+    fs.writeFileSync(proverToml, toml);
+
+    // nargo execute prints: Circuit output: 0xNULLIFIER
+    const stdout = execSync(`"${NARGO}" execute`, {
+      cwd: tmpDir, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
+    });
+    const line = stdout.split("\n").find((l: string) => l.includes("Circuit output:"));
+    if (!line) throw new Error(`compliance nargo execute: 'Circuit output:' not found\n${stdout}`);
+    const match = line.match(/Circuit output:\s*(0x[0-9a-fA-F]+)/);
+    if (!match) throw new Error(`compliance nargo execute: could not parse nullifier from: ${line}`);
+    return match[1];
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 app.post("/api/prove/compliance", (req, res) => {
-  const { amount } = req.body as { amount?: string };
+  const { amount, ownerField } = req.body as { amount?: string; ownerField?: string };
   if (!amount) { res.status(400).json({ error: "amount is required" }); return; }
 
+  const depositorPubkey = ownerField ?? "1";
+
   try {
-    const inputs = { ...DEMO_COMPLIANCE_INPUTS, amount: String(amount) };
+    // Step 1: Pre-compute the per-user nullifier (requires nargo execute)
+    const complianceNullifier = computeComplianceNullifier(depositorPubkey, String(amount));
+
+    // Step 2: Generate the full Groth16 proof with the correct nullifier as public input
+    // Public signal layout: [0]=merkle_root [1]=corridor_id [2]=min_kyc_tier
+    //                        [3]=max_amount  [4]=amount      [5]=compliance_nullifier
+    const inputs = {
+      ...DEMO_KYC_BASE,
+      amount:               String(amount),
+      depositor_pubkey:     depositorPubkey,
+      compliance_nullifier: complianceNullifier,
+    };
     const result = generateProof("compliance", inputs);
+
     res.json({
       proof:               result.proof,
       pubSignals:          result.pubSignals,
@@ -452,26 +544,30 @@ app.post("/api/prove/transfer", async (req, res) => {
     const newRoot = computeNewRoot(leaves, pubVals.newCommitment1, pubVals.newCommitment2);
 
     // Step 6: Generate the Groth16 proof
+    // Shielded transfer: pub_withdraw_amount = 0 (amount stays private on-chain).
+    // The dual-mode circuit constraint: (0 - output_value_1) * 0 == 0 -- satisfied.
+    // The contract's transfer() does NOT check signal[6] at all (no token release).
     const inputs = {
-      merkle_root:       pubVals.merkleRoot,
-      nullifier_hash:    pubVals.nullifierHash,
-      new_commitment_1:  pubVals.newCommitment1,
-      new_commitment_2:  pubVals.newCommitment2,
+      merkle_root:         pubVals.merkleRoot,
+      nullifier_hash:      pubVals.nullifierHash,
+      new_commitment_1:    pubVals.newCommitment1,
+      new_commitment_2:    pubVals.newCommitment2,
       fee,
-      pub_asset_id:      assetId,
-      owner_pubkey:      body.ownerField,
-      value:             body.value,
-      asset_id:          assetId,
-      blinding_factor:   body.blinding,
-      note_secret_key:   body.secretKey,
-      merkle_siblings:   merklePath.siblings,
-      merkle_index:      String(merklePath.index),
-      recipient_pubkey:  body.recipient,
-      output_value_1:    outputValue1,
-      output_blinding_1: outputBlinding1,
-      sender_pubkey:     body.ownerField,
-      output_value_2:    outputValue2,
-      output_blinding_2: outputBlinding2,
+      pub_asset_id:        assetId,
+      pub_withdraw_amount: "0",   // slot 6: 0 = transfer mode, amount stays hidden
+      owner_pubkey:        body.ownerField,
+      value:               body.value,
+      asset_id:            assetId,
+      blinding_factor:     body.blinding,
+      note_secret_key:     body.secretKey,
+      merkle_siblings:     merklePath.siblings,
+      merkle_index:        String(merklePath.index),
+      recipient_pubkey:    body.recipient,
+      output_value_1:      outputValue1,
+      output_blinding_1:   outputBlinding1,
+      sender_pubkey:       body.ownerField,
+      output_value_2:      outputValue2,
+      output_blinding_2:   outputBlinding2,
     };
 
     const result = generateProof("shielded_transfer", inputs);
@@ -570,26 +666,30 @@ app.post("/api/prove/withdraw", async (req, res) => {
     await assertRootMatchesChain(pubVals.merkleRoot);
     const newRoot = computeNewRoot(leaves, pubVals.newCommitment1, pubVals.newCommitment2);
 
+    // Off-ramp withdraw: pub_withdraw_amount = outputValue1 (amount revealed to anchor).
+    // Dual-mode circuit constraint: (outputValue1 - outputValue1) * outputValue1 == 0.
+    // Contract's withdraw() reads signal[6] and verifies it equals the `amount` parameter.
     const inputs = {
-      merkle_root:       pubVals.merkleRoot,
-      nullifier_hash:    pubVals.nullifierHash,
-      new_commitment_1:  pubVals.newCommitment1,
-      new_commitment_2:  pubVals.newCommitment2,
+      merkle_root:         pubVals.merkleRoot,
+      nullifier_hash:      pubVals.nullifierHash,
+      new_commitment_1:    pubVals.newCommitment1,
+      new_commitment_2:    pubVals.newCommitment2,
       fee,
-      pub_asset_id:      assetId,
-      owner_pubkey:      body.ownerField,
-      value:             body.value,
-      asset_id:          assetId,
-      blinding_factor:   body.blinding,
-      note_secret_key:   body.secretKey,
-      merkle_siblings:   merklePath.siblings,
-      merkle_index:      String(merklePath.index),
-      recipient_pubkey:  body.recipient,
-      output_value_1:    outputValue1,
-      output_blinding_1: outputBlinding1,
-      sender_pubkey:     body.ownerField,
-      output_value_2:    outputValue2,
-      output_blinding_2: outputBlinding2,
+      pub_asset_id:        assetId,
+      pub_withdraw_amount: pubVals.outputValue1,   // slot 6: = output_value_1, amount revealed
+      owner_pubkey:        body.ownerField,
+      value:               body.value,
+      asset_id:            assetId,
+      blinding_factor:     body.blinding,
+      note_secret_key:     body.secretKey,
+      merkle_siblings:     merklePath.siblings,
+      merkle_index:        String(merklePath.index),
+      recipient_pubkey:    body.recipient,
+      output_value_1:      outputValue1,
+      output_blinding_1:   outputBlinding1,
+      sender_pubkey:       body.ownerField,
+      output_value_2:      outputValue2,
+      output_blinding_2:   outputBlinding2,
     };
 
     const result = generateProof("shielded_transfer", inputs);

@@ -67,7 +67,7 @@ fn main(
     sender_pubkey:     Field,
     output_value_2:    Field,
     output_blinding_2: Field,
-) -> pub (Field, Field, Field, Field, Field) {
+) -> pub (Field, Field, Field, Field, Field, Field) {
     let input_commit  = note_commitment(owner_pubkey, value, asset_id, blinding_factor);
     let merkle_root   = compute_merkle_root(input_commit, merkle_index as u32, merkle_siblings);
     let nullifier     = compute_nullifier(note_secret_key, input_commit);
@@ -75,7 +75,8 @@ fn main(
     let new_commit_2  = note_commitment(sender_pubkey, output_value_2, asset_id, output_blinding_2);
 
     // Return: (input_commitment, merkle_root, nullifier, new_commitment_1, new_commitment_2)
-    (input_commit, merkle_root, nullifier, new_commit_1, new_commit_2)
+    // output_value_1 is also returned so the proving server can populate pub_withdraw_amount.
+    (input_commit, merkle_root, nullifier, new_commit_1, new_commit_2, output_value_1)
 }
 
 #[test]
@@ -97,7 +98,7 @@ fn test_hash_util_matches_shielded_transfer_vectors() {
 
     let siblings: [Field; 8] = [0; 8];
 
-    let (input_commit, root, nf, c1, c2) = main(
+    let (input_commit, root, nf, c1, c2, ov1) = main(
         owner, value, asset, blind_in, secret,
         siblings, 0,
         recipient, out_val_1, blind_1,
@@ -109,8 +110,9 @@ fn test_hash_util_matches_shielded_transfer_vectors() {
     println(f"merkle_root      = {root}");
     println(f"nullifier_hash   = {nf}");
     println(f"new_commitment_1 = {c1}");
-    println(f"new_commitment_2 = {c2}");
+    println(f"new_commitment_2    = {c2}");
+    println(f"output_value_1      = {ov1}");
 
-    // Sanity: output commitments are distinct
     assert(c1 != c2);
+    assert(ov1 == 900);
 }

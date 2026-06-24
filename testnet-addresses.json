@@ -10,7 +10,9 @@
     "compliance_registry": "CCILBECK36TSTIL5JWODSFJJLTBWXPPRWN6IW5C56NFSOLESEEAVIR7Z",
     "compliance_verifier": "CAZZEALQBXYDW7RPHDHWJ6OYZS7TP2AH256RKZO6X6CQRFDY2LCHD4HL",
     "shielded_transfer_verifier": "CDUKVBXXZZQM4XP6FK73NWCVWUIDP3RXBWLJWDDWCTANQ54NL7NGEGHS",
-    "shielded_pool": "CBLNSBJCL2EEFGTAXBVDZ737FJKYLNBB7EQ5KWSPKFOSLPHBCFPMRUHX",
+    "shielded_pool": "CB7UJQVON2Y3PC4KQ5XMBYE42BX5WISQ22H357RAPTCFLIEX4FLMOSUV",
+    "shielded_pool_v4_prev": "CCOP4WWTDKVZRP6SM4XONN7TRNMIEY3X3ZNZ2ABCENS5XYPMVTXO6LC7",
+    "shielded_pool_v3_prev": "CBLNSBJCL2EEFGTAXBVDZ737FJKYLNBB7EQ5KWSPKFOSLPHBCFPMRUHX",
     "shielded_pool_v2_prev": "CC2DJECLIYMFGZR4YXOJASG2ED7WN77DZNUPNDAWHWDSPNDH7ICXWHPK",
     "shielded_pool_v1": "CCCBEASG54TPJP2B6SJTX5PSG3BMGGXZTY5EXA32FJ7HKVJSF4N6HOWN",
     "pipeline_test_verifier": "CCDT6XZNEGD2GL45CKX3U4CEK47EAFARB2CX4U44CWQX2ZJQ6LDYROC2"
@@ -30,10 +32,17 @@
     "pool_transfer": "a32e0bf05aa2f51c7eb4a55e57d819d40b57f5c8ddc88e0aeb486c6751b66a66",
     "compliance_vk_update_v3": "c6dc308d250f7af51dbd747f3afab07187d576a8366b348acfab504eeec929d9",
     "shielded_vk_update_v3": "bab3b1a3376b71a53b80732137b8bcf2b9288b21c0fc49e745a22e70d395925c",
-    "pool_v3_deploy": "48f363d5b84509fa99ff3a6fd9822af5629c0f2f430d0b50ab8a7c7538b7fa8c"
+    "pool_v3_deploy": "48f363d5b84509fa99ff3a6fd9822af5629c0f2f430d0b50ab8a7c7538b7fa8c",
+    "compliance_vk_update_v4": "10ca1e69e62ecdc27f5bbe7c1a21844e83f790a2600a9413d2b061a9563b68f7",
+    "shielded_vk_update_v4": "39e9cac4ea39e624a3ea8d17297899e5c768e8f77258c1c57fe5a5397127f4f5",
+    "pool_v4_deploy": "1c35b0a8b0203b5b4eddbb9f50b1b07bf498a7c408113014767bcdd5cbb8f6b0",
+    "compliance_vk_update_v5": "38c5f568b1644aefa38e8e367e2a8e17892c9d42819a33fcc563080b50d85141",
+    "shielded_vk_update_v5": "cfcbed7f199c9684baa8cea364045c23cd90ee33b3ab86e61d862edc8bf25e5f",
+    "pool_v5_deploy": "1606cc26c48b232063c6ea429c5522d08b500f0ee9ef0227b4d76a439d24b086"
   },
   "anchor": {
     "home_domain": "testanchor.stellar.org",
-    "asset_code": "SRT"
+    "asset_code": "SRT",
+    "asset_issuer": "GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6"
   }
 }

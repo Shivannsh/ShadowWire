@@ -117,7 +117,9 @@ export default function AlicePage() {
       });
 
       setStatus("Generating compliance proof for deposit amount...");
-      const complianceProof = await generateComplianceProof({ amount: BigInt(value) });
+      const complianceProof = await generateComplianceProof({
+        amount: BigInt(value), ownerField,
+      });
 
       setStatus("Building shielded deposit transaction...");
       const xdr = await buildDepositTx({

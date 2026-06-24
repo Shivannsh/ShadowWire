@@ -20,5 +20,6 @@
   "new_commitment_1":  "0x28dcb31bfb0b19d9e1dd8c849775808f6e6f3b96c2d5497a60cba60d54f73b7e",
   "new_commitment_2":  "0x18644bdfd3edc182668d6b6ac3b4d3b7761188314333ee83f185eee915675f27",
   "fee":               "10",
-  "pub_asset_id":      "3"
+  "pub_asset_id":      "3",
+  "pub_withdraw_amount": "900"
 }

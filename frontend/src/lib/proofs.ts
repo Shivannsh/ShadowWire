@@ -140,10 +140,11 @@ interface ComplianceProveResponse {
 }
 
 export async function generateComplianceProof(
-  input: DepositProofInput
+  input: DepositProofInput & { ownerField?: string }
 ): Promise<ComplianceProofBundle> {
   const data = await post<ComplianceProveResponse>("/api/prove/compliance", {
-    amount: input.amount.toString(),
+    amount:     input.amount.toString(),
+    ownerField: input.ownerField,
   });
 
   return {

@@ -34,8 +34,13 @@ pub enum PoolError {
     InvalidAmount           = 4,
     ComplianceNullifierUsed = 5,
     /// Merkle root in the proof does not match the registry / pool root on-chain.
-    /// This prevents using a stale or forged proof for a different tree state.
     StaleRoot               = 6,
+    /// Compliance proof's amount signal does not match the actual deposit amount.
+    /// Prevents depositing a different amount than the one the compliance proof covers.
+    AmountMismatch          = 7,
+    /// Shielded proof's pub_withdraw_amount signal does not match the requested amount.
+    /// Prevents draining the pool by claiming a larger withdrawal than the note holds.
+    WithdrawAmountMismatch  = 8,
 }
 
 #[contracttype]
@@ -181,6 +186,18 @@ impl ShieldedPool {
         let mut arr = [0u8; 32];
         for i in 0..32u32 {
             arr[i as usize] = pub_signals.get(offset + i).unwrap_or(0);
+        }
+        BytesN::from_array(env, &arr)
+    }
+
+    /// Convert an i128 amount (stroops) into the 32-byte big-endian Field encoding
+    /// used in BN254 public signals so we can compare on-chain.
+    fn amount_to_signal(env: &Env, amount: i128) -> BytesN<32> {
+        let mut arr = [0u8; 32];
+        let bytes = amount.to_be_bytes();
+        // i128 is 16 bytes; place them in the low 16 bytes of the 32-byte array.
+        for i in 0..16usize {
+            arr[16 + i] = bytes[i];
         }
         BytesN::from_array(env, &arr)
     }
@@ -334,8 +351,18 @@ impl ShieldedPool {
 
         // Gap 2: Ensure the compliance proof was issued against the live registry root.
         // Signal[0] in compliance_pub_signals = merkle_root of KYC attribute tree.
-        // If this doesn't match the registry's current root, the proof is stale or forged.
         Self::assert_compliance_root_matches(&env, &compliance_pub_signals)?;
+
+        // Fix 3a: Compliance proof's amount (signal[4]) must match the actual deposit amount.
+        // Prevents depositing 1000 tokens with a compliance proof that only covers 100.
+        // compliance public signal layout:
+        //   [0] merkle_root  [1] corridor_id  [2] min_kyc_tier  [3] max_amount
+        //   [4] amount       [5] compliance_nullifier
+        let proof_amount_signal = Self::extract_signal(&env, &compliance_pub_signals, 4);
+        let expected_amount_signal = Self::amount_to_signal(&env, amount);
+        if proof_amount_signal != expected_amount_signal {
+            return Err(PoolError::AmountMismatch);
+        }
 
         // Verify the compliance proof on-chain (BN254 Groth16 pairing check)
         Self::verify_compliance(&env, compliance_proof, compliance_pub_signals)?;
@@ -432,9 +459,21 @@ impl ShieldedPool {
         // Double-spend check
         Self::mark_spend_nullifier(&env, &spend_nullifier)?;
 
-        // Gap 3: Same root check as transfer() - the note being spent must be in
-        // the current pool tree.
+        // Gap 3: Same root check as transfer()
         Self::assert_pool_root_matches(&env, &shielded_pub_signals)?;
+
+        // Fix 1: pub_withdraw_amount (signal[6]) must match the `amount` parameter.
+        // The shielded_transfer circuit enforces pub_withdraw_amount == output_value_1,
+        // so this check closes the pool-drain vulnerability: a note worth 100 tokens
+        // cannot be used to withdraw 1,000,000 tokens.
+        // shielded public signal layout:
+        //   [0] merkle_root  [1] nullifier_hash  [2] new_commitment_1
+        //   [3] new_commitment_2  [4] fee  [5] pub_asset_id  [6] pub_withdraw_amount
+        let proof_withdraw_signal = Self::extract_signal(&env, &shielded_pub_signals, 6);
+        let expected_amount_signal = Self::amount_to_signal(&env, amount);
+        if proof_withdraw_signal != expected_amount_signal {
+            return Err(PoolError::WithdrawAmountMismatch);
+        }
 
         // Verify the shielded proof
         Self::verify_shielded(&env, shielded_proof, shielded_pub_signals)?;
