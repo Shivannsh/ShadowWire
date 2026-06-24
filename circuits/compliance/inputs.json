@@ -1,0 +1,10 @@
+{
+  "secret_salt": "42",
+  "kyc_tier": "2",
+  "sanctioned_flag": "0",
+  "country_code": "91",
+  "attribute_commitment": "0x12c9b384e1982f09ace17a39265a54a8e71888b3e7332553d5b37e786fd4b7d3",
+  "min_kyc_tier": "1",
+  "max_amount": "1000000",
+  "amount": "500"
+}

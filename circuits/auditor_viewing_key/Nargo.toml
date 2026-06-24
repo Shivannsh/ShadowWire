@@ -1,0 +1,7 @@
+[package]
+name = "auditor_viewing_key"
+type = "bin"
+authors = ["ShadowWire"]
+compiler_version = ">=1.0.0"
+
+[dependencies]

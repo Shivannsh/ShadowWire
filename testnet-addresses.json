@@ -1,0 +1,31 @@
+{
+  "network": "testnet",
+  "asset": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+  "accounts": {
+    "deployer": "GAYV3WPKY5P436XUVOMEMMDTRQJXVHLAI2G5ABY57JCEYOT6HNKATRNN",
+    "alice": "GBOPHBTX6MHD2326B4SQBTOYC5N3MVS4IKFQZAOUHCBQEQLLLTEBCKLF",
+    "bob": "GBTFDNVSALYFN2ZIBVOFKXKUHUGXKU2E2ZBDAXGFXK33D4RNB5MGQZK7"
+  },
+  "contracts": {
+    "compliance_registry": "CCILBECK36TSTIL5JWODSFJJLTBWXPPRWN6IW5C56NFSOLESEEAVIR7Z",
+    "compliance_verifier": "CAZZEALQBXYDW7RPHDHWJ6OYZS7TP2AH256RKZO6X6CQRFDY2LCHD4HL",
+    "shielded_transfer_verifier": "CDUKVBXXZZQM4XP6FK73NWCVWUIDP3RXBWLJWDDWCTANQ54NL7NGEGHS",
+    "shielded_pool": "CCCBEASG54TPJP2B6SJTX5PSG3BMGGXZTY5EXA32FJ7HKVJSF4N6HOWN",
+    "pipeline_test_verifier": "CCDT6XZNEGD2GL45CKX3U4CEK47EAFARB2CX4U44CWQX2ZJQ6LDYROC2"
+  },
+  "txs": {
+    "pipeline_test_deploy": "4d4551751ac6ffa3d072cd2926e27893ae32dee1edc5323756d2a75519603a58",
+    "registry_deploy": "52cab5279bdb80069123aa2ec67eb9f3c2c0c05cddfebfc118a5e83f59c4adf3",
+    "compliance_verifier_deploy": "ab9f35c22d3ed337c951e80f9c3835c3b975654dedc4da23fb158b3a70962c35",
+    "shielded_verifier_deploy": "4eb9fff4c0daa98559ba0de878a0eecba97cc153b562e06a373dfac49589aacf",
+    "shielded_verifier_set_vk": "616b122da3a0d60fd991aa6b91d51f4ad5b6193ec82b58cdd58dab1448bb6f82",
+    "pool_deploy": "8448489dbb1d91900182a29859f8c68ef112ed2b6584620345834b797ae29afe",
+    "compliance_verify": "59f013d64676fab0fc1bd52dd56f9fec9bc1e351922dc0694d709b921eb7e4f7",
+    "pool_deposit": "52808dfa238ec5ec3de7fb051475a6b5f578573fda40302e8ad42597838d64dc",
+    "pool_transfer": "a32e0bf05aa2f51c7eb4a55e57d819d40b57f5c8ddc88e0aeb486c6751b66a66"
+  },
+  "anchor": {
+    "home_domain": "testanchor.stellar.org",
+    "asset_code": "SRT"
+  }
+}

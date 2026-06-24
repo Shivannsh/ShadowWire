@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+  "compliance_registry",
+  "compliance_verifier",
+  "shielded_transfer_verifier",
+  "shielded_pool",
+]
+
+[workspace.dependencies]
+soroban-sdk = "25.1.0"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true
+
+# Use workspace-local target dir for reproducible wasm paths
+[workspace.metadata.stellar]
+target-dir = "target"

@@ -1,0 +1,23 @@
+{
+  "name": "shadowwire",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "install-tools": "bash scripts/install-tools.sh",
+    "fund": "bash scripts/fund-accounts.sh",
+    "deploy": "bash scripts/deploy.sh",
+    "demo": "bash scripts/run-demo.sh",
+    "corridor": "npm run demo && bash scripts/corridor-e2e.sh",
+    "issuer": "cd mock-issuer && npm start",
+    "frontend": "cd frontend && npm run dev"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "circomlibjs": "^0.1.7",
+    "snarkjs": "^0.7.6"
+  }
+}
