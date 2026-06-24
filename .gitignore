@@ -18,3 +18,7 @@ frontend/node_modules/
 *.ptau
 *.wtns
 *.r1cs
+*.log
+coverage/
+.cache/
+out/
