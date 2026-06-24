@@ -1,16 +1,24 @@
 {
-  "owner_pubkey": "1",
-  "value": "1000",
-  "asset_id": "3",
-  "blinding_factor": "7",
-  "note_secret_key": "13",
-  "merkle_path": ["0", "0", "0", "0"],
-  "merkle_index": "0",
-  "recipient_pubkey": "2",
-  "output_value": "990",
-  "output_blinding": "11",
-  "merkle_root": "0x25a6a81c92903601ea976fa9827f0a8c6a0c30878e8de27be9dba110c02547f9",
-  "nullifier_hash": "0x16b25527ca2f5fdbed340142aa5aed6a988bb16147a882d54bd338bcf729353f",
-  "new_commitment": "0x0dbaf4f9f4107d9a69a02a32b29a1d77079aa39d280e52504645f191563bee1e",
-  "fee": "10"
+  "owner_pubkey":      "1",
+  "value":             "1000",
+  "asset_id":          "3",
+  "blinding_factor":   "7",
+  "note_secret_key":   "13",
+  "merkle_siblings":   ["0", "0", "0", "0", "0", "0", "0", "0"],
+  "merkle_index":      "0",
+
+  "recipient_pubkey":  "2",
+  "output_value_1":    "900",
+  "output_blinding_1": "11",
+
+  "sender_pubkey":     "1",
+  "output_value_2":    "90",
+  "output_blinding_2": "17",
+
+  "merkle_root":       "0x299b185e32e43637fe9efb84eeb9735942c91afa13d93b57a07c2dd3cf27692a",
+  "nullifier_hash":    "0x21098b6077ec3a8043935c6013cce8163634cf17f8de14b1aa083126690a5133",
+  "new_commitment_1":  "0x28dcb31bfb0b19d9e1dd8c849775808f6e6f3b96c2d5497a60cba60d54f73b7e",
+  "new_commitment_2":  "0x18644bdfd3edc182668d6b6ac3b4d3b7761188314333ee83f185eee915675f27",
+  "fee":               "10",
+  "pub_asset_id":      "3"
 }

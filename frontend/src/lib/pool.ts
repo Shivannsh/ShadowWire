@@ -10,7 +10,7 @@ function addressScVal(addr: string): StellarSdk.xdr.ScVal {
 
 function bytesN32ScVal(bytes: Uint8Array): StellarSdk.xdr.ScVal {
   if (bytes.length !== 32) {
-    throw new Error("Expected 32-byte value");
+    throw new Error(`Expected 32-byte value, got ${bytes.length}`);
   }
   return StellarSdk.xdr.ScVal.scvBytes(Buffer.from(bytes));
 }
@@ -51,9 +51,18 @@ export interface DepositParams {
   amount: string;
   commitment: Uint8Array;
   newRoot: Uint8Array;
+  /** Anti-replay compliance nullifier (stored on-chain after use) */
+  complianceNullifier: Uint8Array;
   complianceProof: ComplianceProofBundle;
 }
 
+/**
+ * Build a deposit() transaction.
+ *
+ * New interface (matches updated ShieldedPool.deposit):
+ *   deposit(depositor, amount, note_commitment, new_root,
+ *           compliance_nullifier, compliance_proof, compliance_pub_signals)
+ */
 export async function buildDepositTx(params: DepositParams): Promise<string> {
   const contractId = await requirePoolContract();
   const amount = toStroops(params.amount);
@@ -63,6 +72,7 @@ export async function buildDepositTx(params: DepositParams): Promise<string> {
     i128ScVal(amount),
     bytesN32ScVal(params.commitment),
     bytesN32ScVal(params.newRoot),
+    bytesN32ScVal(params.complianceNullifier),
     bytesScVal(params.complianceProof.proof),
     bytesScVal(params.complianceProof.pubSignals),
   ]);
@@ -71,18 +81,31 @@ export async function buildDepositTx(params: DepositParams): Promise<string> {
 export interface TransferParams {
   sender: string;
   nullifier: Uint8Array;
-  newCommitment: Uint8Array;
+  /** Recipient's output note commitment */
+  newCommitment1: Uint8Array;
+  /** Sender's change note commitment */
+  newCommitment2: Uint8Array;
   newRoot: Uint8Array;
   shieldedProof: ShieldedProofBundle;
 }
 
+/**
+ * Build a transfer() transaction.
+ *
+ * New interface (matches updated ShieldedPool.transfer):
+ *   transfer(sender, spend_nullifier, new_commitment_1, new_commitment_2,
+ *            new_root, shielded_proof, shielded_pub_signals)
+ *
+ * Two output commitments are now required -- recipient note + change note.
+ */
 export async function buildTransferTx(params: TransferParams): Promise<string> {
   const contractId = await requirePoolContract();
 
   return invokeContract(params.sender, contractId, "transfer", [
     addressScVal(params.sender),
     bytesN32ScVal(params.nullifier),
-    bytesN32ScVal(params.newCommitment),
+    bytesN32ScVal(params.newCommitment1),
+    bytesN32ScVal(params.newCommitment2),
     bytesN32ScVal(params.newRoot),
     bytesScVal(params.shieldedProof.proof),
     bytesScVal(params.shieldedProof.pubSignals),

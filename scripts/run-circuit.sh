@@ -7,10 +7,13 @@ NOIR_GROTH16="${ROOT}/_ref/Noir-Groth16"
 COMMON_SH="${ROOT}/scripts/lib/common.sh"
 CIRCUIT_DIR="${1:-${ROOT}/circuits/pipeline_test}"
 OUT_DIR="${OUT_DIR:-${ROOT}/target/groth16/$(basename "${CIRCUIT_DIR}")}"
-PTAU_POWER="${PTAU_POWER:-12}"
-# Auto-bump for larger circuits
-if [[ "$(basename "${CIRCUIT_DIR}")" == "shielded_transfer" ]]; then
-  PTAU_POWER="${PTAU_POWER:-15}"
+# PTAU power: compliance uses depth-10 Merkle, shielded uses depth-8 + 2 outputs
+# Both require power 16 (65536 constraint capacity). Pipeline_test fits in 12.
+CIRCUIT_BASENAME="$(basename "${CIRCUIT_DIR}")"
+if [[ "${CIRCUIT_BASENAME}" == "shielded_transfer" || "${CIRCUIT_BASENAME}" == "compliance" ]]; then
+  PTAU_POWER="${PTAU_POWER:-16}"
+else
+  PTAU_POWER="${PTAU_POWER:-12}"
 fi
 NOIR_CLI="${NOIR_CLI:-${ROOT}/.tools/noir-groth16-target/debug/noir-cli}"
 

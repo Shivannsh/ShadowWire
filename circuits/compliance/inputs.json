@@ -1,10 +1,15 @@
 {
-  "secret_salt": "42",
-  "kyc_tier": "2",
+  "secret_salt":     "42",
+  "kyc_tier":        "2",
   "sanctioned_flag": "0",
-  "country_code": "91",
-  "attribute_commitment": "0x12c9b384e1982f09ace17a39265a54a8e71888b3e7332553d5b37e786fd4b7d3",
-  "min_kyc_tier": "1",
-  "max_amount": "1000000",
-  "amount": "500"
+  "country_code":    "91",
+  "merkle_siblings": ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0"],
+  "merkle_index":    "0",
+
+  "merkle_root":           "0x04cb8cd7088dfd9b428e728e60afdc55a6b5fff80144db7c497ef79d014a5211",
+  "corridor_id":           "1",
+  "min_kyc_tier":          "1",
+  "max_amount":            "1000000",
+  "amount":                "500",
+  "compliance_nullifier":  "0x0f77c274c15388b0b8156c1b9e4f7d83e856e7cfb325a84eec38e4a8c165dc7b"
 }

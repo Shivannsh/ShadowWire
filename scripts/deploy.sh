@@ -29,6 +29,7 @@ deploy() {
       --compliance_verifier "${COMPLIANCE_V}" \
       --shielded_verifier "${SHIELDED_V}" \
       --registry "${REGISTRY}" \
+      --corridor_id 1 \
       --initial_root "0000000000000000000000000000000000000000000000000000000000000000" 2>&1)
   else
     out=$(stellar contract deploy --wasm "${wasm}" --network "${NETWORK}" --source-account "${SOURCE}" 2>&1)
@@ -40,8 +41,8 @@ deploy() {
 setup_verifier() {
   local circuit_dir="$1"
   local id="$2"
-  local ptaupower=12
-  [[ "$(basename "$circuit_dir")" == "shielded_transfer" ]] && ptaupower=15
+  # Both compliance (depth-10) and shielded_transfer (depth-8) need power 16
+  local ptaupower=16
   PTAU_POWER=$ptaupower bash "${ROOT}/scripts/run-circuit.sh" "${circuit_dir}" >&2
   local proof_dir="${ROOT}/target/groth16/$(basename ${circuit_dir})/proof"
   local build_dir="${ROOT}/target/groth16/$(basename ${circuit_dir})/stellar"

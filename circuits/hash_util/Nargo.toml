@@ -1,0 +1,7 @@
+[package]
+name = "hash_util"
+type = "bin"
+authors = ["ShadowWire"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
