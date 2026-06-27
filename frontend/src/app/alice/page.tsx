@@ -4,14 +4,24 @@ import { useCallback, useEffect, useState } from "react";
 import { useFreighter } from "@/hooks/useFreighter";
 import { useTestnetAddresses } from "@/hooks/useTestnetAddresses";
 import { FlowStep, StatusBadge } from "@/components/FlowStep";
-import { runSep24Deposit } from "@/lib/sep24";
+import { Button, FieldLabel, Kicker } from "@/components/ui/primitives";
+import {
+  ArrowUpRightIcon,
+  WalletIcon,
+  PlusIcon,
+  ShieldIcon,
+  SendIcon,
+  GlobeIcon,
+  CopyIcon,
+  CheckIcon,
+} from "@/components/ui/icons";
+import { runSep24Deposit, openSep24Popup } from "@/lib/sep24";
 import { buildDepositTx, buildTransferTx, getPoolRoot, rootToHex } from "@/lib/pool";
 import { submitTransaction } from "@/lib/transactions";
 import {
   generateComplianceProof,
   proveDeposit,
   generateShieldedTransferProof,
-  encodeNoteReceipt,
 } from "@/lib/proofs";
 import type { NoteReceipt } from "@/lib/proofs";
 import {
@@ -23,9 +33,15 @@ import {
   encodeNoteReceipt as walletEncodeReceipt,
 } from "@/lib/noteWallet";
 import type { ShieldedNote } from "@/lib/noteWallet";
-import { fundTestnetAccount, getClassicAssetBalance } from "@/lib/stellar";
+import { fundTestnetAccount, getClassicAssetBalance, buildAddTrustlineTx, hasTrustline } from "@/lib/stellar";
 
 type Step = 1 | 2 | 3;
+
+/** Parse any numeric string (including "9.0", "9.5") to a whole-number string.
+ *  Noir circuits and BigInt() both require plain integers — no decimal point. */
+function toIntStr(v: string): string {
+  return String(Math.floor(parseFloat(v)));
+}
 
 export default function AlicePage() {
   const { address, connected, connect, sign, isCorrectNetwork } = useFreighter();
@@ -43,6 +59,7 @@ export default function AlicePage() {
   const [noteReceipt, setNoteReceipt] = useState<string | null>(null);
   const [myNotes, setMyNotes]         = useState<ShieldedNote[]>([]);
   const [activeNote, setActiveNote]   = useState<ShieldedNote | null>(null);
+  const [copied, setCopied]           = useState(false);
 
   const poolAddress = addresses?.contracts?.shielded_pool ?? "";
   const assetCode   = addresses?.anchor?.asset_code   ?? "SRT";
@@ -69,6 +86,17 @@ export default function AlicePage() {
     if (addresses?.accounts?.bob) setBobRecipientField(addresses.accounts.bob);
   }, [addresses?.accounts?.bob]);
 
+  // Update stale default status once wallet is connected (header + page share state)
+  useEffect(() => {
+    if (connected && address) {
+      setStatus((prev) =>
+        prev === "Connect Freighter to begin"
+          ? `Wallet connected — start with a SEP-24 deposit or shield existing SRT`
+          : prev
+      );
+    }
+  }, [connected, address]);
+
   useEffect(() => { refreshBalance(); refreshRoot(); refreshNotes(); },
     [refreshBalance, refreshRoot, refreshNotes]);
 
@@ -90,17 +118,52 @@ export default function AlicePage() {
       setStatus("Account funded with testnet XLM");
     });
 
-  const handleSep24Deposit = () =>
+  const handleAddTrustline = () =>
     run(async () => {
       if (!address) throw new Error("Connect wallet first");
-      if (!isCorrectNetwork) throw new Error("Switch Freighter to testnet");
+      if (!assetIssuer) throw new Error("Asset issuer not loaded yet");
+      const already = await hasTrustline(address, assetCode, assetIssuer);
+      if (already) { setStatus("Trustline already exists"); return; }
+      setStatus(`Adding ${assetCode} trustline…`);
+      const xdr = await buildAddTrustlineTx(address, assetCode, assetIssuer);
+      setStatus("Sign trustline in Freighter…");
+      const signed = await sign(xdr);
+      const { submitTransaction } = await import("@/lib/transactions");
+      await submitTransaction(signed);
+      await refreshBalance();
+      setStatus(`${assetCode} trustline added — ready to receive from anchor`);
+    });
+
+  const handleSep24Deposit = () => {
+    if (!address) { setStatus("Connect wallet first"); setStatusType("error"); return; }
+    if (!isCorrectNetwork) { setStatus("Switch Freighter to testnet"); setStatusType("error"); return; }
+    // Open the blank popup NOW while the click gesture is live — browsers block
+    // window.open() called from inside async callbacks.
+    const popup = openSep24Popup("about:blank");
+    run(async () => {
+      // Auto-add trustline if missing so the anchor can send SRT
+      if (assetIssuer) {
+        const already = await hasTrustline(address, assetCode, assetIssuer);
+        if (!already) {
+          setStatus(`Adding ${assetCode} trustline first…`);
+          const { buildAddTrustlineTx: batt } = await import("@/lib/stellar");
+          const xdr = await batt(address, assetCode, assetIssuer);
+          setStatus("Sign trustline in Freighter…");
+          const signed = await sign(xdr);
+          const { submitTransaction } = await import("@/lib/transactions");
+          await submitTransaction(signed);
+          setStatus("Trustline added — proceeding with SEP-24 deposit…");
+        }
+      }
       const { transaction } = await runSep24Deposit({
-        account: address, signXdr: sign, amount: depositAmount, onStatus: setStatus,
+        account: address, signXdr: sign, amount: depositAmount, onStatus: setStatus, popup,
       });
+      if (transaction.amount_out) setDepositAmount(toIntStr(transaction.amount_out));
       setStatus(`SEP-24 deposit ${transaction.status}`);
       await refreshBalance();
       setActiveStep(2);
     });
+  };
 
   const handleShield = () =>
     run(async () => {
@@ -109,7 +172,8 @@ export default function AlicePage() {
       // --- Generate fresh note randomness for this deposit ---
       const ownerField              = await addressToField(address);
       const { blinding, secretKey } = generateNoteRandomness();
-      const value                   = depositAmount;
+      // Sanitize: anchor returns "9.0"; Noir circuits need a plain integer string.
+      const value                   = toIntStr(depositAmount);
 
       setStatus("Computing note commitment and new pool root (hash_util)...");
       const { commitment, newRoot } = await proveDeposit({
@@ -137,7 +201,7 @@ export default function AlicePage() {
       const result  = await submitTransaction(signed);
       setTxHash(result.hash);
 
-      // Save the note to localStorage so Alice can spend it later
+      // Save the note to localStorage so the Buyer can spend it later
       const commitmentHex = "0x" + Buffer.from(commitment).toString("hex");
       const note: ShieldedNote = {
         owner:      ownerField,
@@ -160,11 +224,11 @@ export default function AlicePage() {
   const handleSendPrivate = () =>
     run(async () => {
       if (!address || !activeNote) throw new Error("Shield funds first");
-      if (!bobRecipientField.trim()) throw new Error("Enter Bob's recipient field");
+      if (!bobRecipientField.trim()) throw new Error("Enter the Seller's recipient field");
 
       setStatus("Loading real pool tree + computing Merkle path (tree_builder)...");
 
-      // Derive Bob's ownerField from his Stellar address if it looks like one
+      // Derive the Seller's ownerField from their Stellar address if it looks like one
       let recipientField = bobRecipientField;
       if (bobRecipientField.startsWith("G") && bobRecipientField.length === 56) {
         recipientField = await addressToField(bobRecipientField);
@@ -203,154 +267,216 @@ export default function AlicePage() {
       setActiveNote(null);
       await refreshRoot();
 
-      // Build note receipt for Bob
+      // Build note receipt for the Seller
       if (shieldedProof.bobNote) {
         const receipt = walletEncodeReceipt(shieldedProof.bobNote as NoteReceipt);
         setNoteReceipt(receipt);
         setStatus(
-          `Transfer confirmed. Copy the receipt below and send to Bob: ${result.hash.slice(0, 12)}...`
+          `Transfer confirmed. Copy the receipt below and send it to the Seller: ${result.hash.slice(0, 12)}...`
         );
       } else {
         setStatus(`Transfer confirmed: ${result.hash.slice(0, 12)}...`);
       }
     });
 
+  const copyReceipt = () => {
+    if (!noteReceipt) return;
+    navigator.clipboard?.writeText(noteReceipt).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  };
+
   return (
-    <div className="mx-auto max-w-3xl px-6 py-12">
+    <div className="mx-auto max-w-3xl px-5 pb-28 pt-32">
+      {/* Header */}
       <div className="mb-10">
-        <p className="text-sm font-medium text-accent">Sender persona</p>
-        <h1 className="mt-1 text-3xl font-bold text-slate-50">Alice&apos;s corridor</h1>
-        <p className="mt-2 text-slate-400">
-          Deposit fiat via SEP-24 &rarr; shield with fresh note randomness &rarr; send privately to Bob
+        <Kicker icon={<SendIcon size={13} className="text-accent" />}>
+          Buyer · sender
+        </Kicker>
+        <h1 className="display mt-4 text-display-md text-balance">
+          Send privately,{" "}
+          <span className="serif-accent text-fg-soft">end to end.</span>
+        </h1>
+        <p className="mt-3 max-w-xl text-fg-muted">
+          Deposit fiat via SEP-24, shield it with fresh note randomness, then
+          send a private transfer to the Seller.
         </p>
       </div>
 
       {!connected && (
-        <div className="mb-8 rounded-xl border border-accent/30 bg-accent/5 p-6 text-center">
-          <p className="mb-4 text-slate-300">Connect Freighter to run the sender flow</p>
-          <button
+        <div className="mb-8 flex flex-col items-center gap-4 rounded-2xl border border-accent/25 bg-accent/[0.06] p-8 text-center">
+          <WalletIcon size={26} className="text-accent" />
+          <p className="text-fg-soft">Connect Freighter to run the sender flow.</p>
+          <Button
             onClick={() => connect().catch((e: Error) => setStatus(e.message))}
-            className="rounded-lg bg-accent px-5 py-2 text-sm font-medium text-surface"
-          >Connect wallet</button>
+            icon={<WalletIcon size={16} />}
+          >
+            Connect wallet
+          </Button>
         </div>
       )}
 
+      {/* Account summary */}
       {connected && address && (
-        <div className="mb-8 grid gap-4 rounded-xl border border-surface-border bg-surface-raised/40 p-4 text-sm sm:grid-cols-3">
-          <div>
-            <span className="text-slate-500">Account</span>
-            <p className="font-mono text-slate-200">{address.slice(0, 12)}...</p>
-          </div>
-          <div>
-            <span className="text-slate-500">{assetCode} balance</span>
-            <p className="font-mono text-accent">{srtBalance}</p>
-          </div>
-          <div>
-            <span className="text-slate-500">Pool root</span>
-            <p className="font-mono text-xs text-shield">{poolRoot?.slice(0, 16) ?? "---"}...</p>
-          </div>
+        <div className="mb-6 grid gap-px overflow-hidden rounded-2xl border border-surface-border bg-surface-border sm:grid-cols-3">
+          <Stat label="Account" value={`${address.slice(0, 10)}…`} tone="fg" />
+          <Stat label={`${assetCode} balance`} value={srtBalance} tone="accent" />
+          <Stat label="Pool root" value={poolRoot ? `${poolRoot.slice(0, 14)}…` : "—"} tone="shield" small />
         </div>
       )}
 
+      {/* Spendable notes */}
       {myNotes.length > 0 && (
-        <div className="mb-6 rounded-xl border border-accent/20 bg-accent/5 p-4 text-sm">
-          <p className="text-xs font-medium text-accent mb-2">Spendable notes in wallet</p>
-          {myNotes.map((n, i) => (
-            <div
-              key={n.commitment}
-              onClick={() => { setActiveNote(n); setSendAmount(n.value); setActiveStep(3); }}
-              className={`cursor-pointer rounded-lg px-3 py-2 mb-1 ${activeNote?.commitment === n.commitment ? "bg-accent/20 border border-accent/50" : "hover:bg-accent/10"}`}
-            >
-              <span className="text-slate-300">Note {i + 1}</span>
-              <span className="ml-3 font-mono text-accent">{n.value} SRT</span>
-              <span className="ml-3 text-xs text-slate-500">{n.commitment.slice(0, 14)}...</span>
-            </div>
-          ))}
+        <div className="mb-8 rounded-2xl border border-surface-border bg-ink-850/50 p-4">
+          <p className="kicker mb-3">
+            <ShieldIcon size={13} className="text-accent" />
+            Spendable notes
+          </p>
+          <div className="space-y-1.5">
+            {myNotes.map((n, i) => {
+              const active = activeNote?.commitment === n.commitment;
+              return (
+                <button
+                  key={n.commitment}
+                  onClick={() => { setActiveNote(n); setSendAmount(n.value); setActiveStep(3); }}
+                  className={`flex w-full items-center justify-between rounded-xl border px-3.5 py-2.5 text-left transition-colors ${
+                    active
+                      ? "border-accent/40 bg-accent/10"
+                      : "border-transparent hover:border-surface-border hover:bg-surface-raised"
+                  }`}
+                >
+                  <span className="flex items-center gap-3">
+                    <span className="text-sm text-fg-soft">Note {i + 1}</span>
+                    <span className="num text-sm font-semibold text-accent">{n.value} {assetCode}</span>
+                  </span>
+                  <span className="num text-xs text-fg-faint">{n.commitment.slice(0, 16)}…</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      <div className="space-y-6">
+      {/* Flow */}
+      <div>
         <FlowStep step={1} title="SEP-24 deposit"
-          description="Interactive anchor -- deposit fiat, receive SRT on Stellar"
+          description="Interactive anchor flow — deposit fiat, receive SRT on Stellar."
           status={activeStep === 1 ? "active" : activeStep > 1 ? "done" : "pending"}>
-          <div className="flex flex-wrap gap-3">
+          <FieldLabel label="Deposit amount" hint={assetCode}>
             <input type="text" value={depositAmount}
               onChange={(e) => setDepositAmount(e.target.value)}
               placeholder="Amount"
-              className="rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm text-slate-200" />
-            <button onClick={handleFund} disabled={!connected}
-              className="rounded-lg border border-surface-border px-4 py-2 text-sm text-slate-300 hover:border-accent/50 disabled:opacity-40">
+              className="field max-w-40" />
+          </FieldLabel>
+          <div className="mt-4 flex flex-wrap gap-2.5">
+            <Button variant="ghost" onClick={handleFund} disabled={!connected} icon={<PlusIcon size={16} />}>
               Fund XLM
-            </button>
-            <button onClick={handleSep24Deposit} disabled={!connected}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface disabled:opacity-40">
+            </Button>
+            <Button variant="ghost" onClick={handleAddTrustline} disabled={!connected}>
+              Add {assetCode} trustline
+            </Button>
+            <Button onClick={handleSep24Deposit} disabled={!connected} icon={<GlobeIcon size={16} />}>
               Open SEP-24 deposit
-            </button>
+            </Button>
           </div>
         </FlowStep>
 
         <FlowStep step={2} title="Shield funds"
-          description="Fresh note randomness -- compliance proof for the exact deposited amount"
+          description="Fresh note randomness and a compliance proof for the exact deposited amount."
           status={activeStep === 2 ? "active" : activeStep > 2 ? "done" : "pending"}>
-          <div className="flex flex-wrap gap-3 items-center">
-            <span className="text-sm text-slate-400">Shielding {depositAmount} SRT</span>
-            <span className="text-xs text-slate-500">(from SEP-24 deposit)</span>
-            <button onClick={handleShield} disabled={!connected || activeStep < 2}
-              className="rounded-lg bg-shield px-4 py-2 text-sm font-medium text-surface disabled:opacity-40">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+            <p className="text-sm text-fg-soft">
+              Shielding <span className="num font-semibold text-accent">{depositAmount} {assetCode}</span>
+              <span className="ml-2 text-xs text-fg-faint">from the SEP-24 deposit</span>
+            </p>
+            <Button variant="shield" onClick={handleShield} disabled={!connected || activeStep < 2} icon={<ShieldIcon size={16} />}>
               Shield into pool
-            </button>
+            </Button>
           </div>
         </FlowStep>
 
         <FlowStep step={3} title="Send privately"
-          description="Real Merkle path from chain -- proof generated against live pool state"
-          status={activeStep === 3 ? "active" : "pending"}>
-          <div className="space-y-3">
-            <input type="text" value={bobRecipientField}
-              onChange={(e) => setBobRecipientField(e.target.value)}
-              placeholder="Bob's Stellar address or pool Field ID"
-              className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm text-slate-200" />
-            <div className="flex flex-wrap gap-3">
-              <input type="text" value={sendAmount}
-                onChange={(e) => setSendAmount(e.target.value)}
-                placeholder="Amount to send"
-                className="rounded-lg border border-surface-border bg-surface px-3 py-2 text-sm text-slate-200" />
-              <button onClick={handleSendPrivate}
+          description="Real Merkle path from chain — the proof is generated against live pool state."
+          status={activeStep === 3 ? "active" : "pending"}
+          last>
+          <div className="space-y-4">
+            <FieldLabel label="Seller recipient" hint="Stellar address or pool field ID">
+              <input type="text" value={bobRecipientField}
+                onChange={(e) => setBobRecipientField(e.target.value)}
+                placeholder="G… or pool Field ID"
+                className="field" />
+            </FieldLabel>
+            <div className="flex flex-wrap items-end gap-3">
+              <FieldLabel label="Amount to send" hint={assetCode}>
+                <input type="text" value={sendAmount}
+                  onChange={(e) => setSendAmount(e.target.value)}
+                  placeholder="Amount"
+                  className="field max-w-40" />
+              </FieldLabel>
+              <Button onClick={handleSendPrivate}
                 disabled={!connected || activeStep < 3 || !activeNote}
-                className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface disabled:opacity-40">
+                icon={<SendIcon size={16} />}>
                 Send privately
-              </button>
+              </Button>
             </div>
           </div>
 
           {noteReceipt && (
-            <div className="mt-4 rounded-lg border border-shield/40 bg-shield/5 p-4">
-              <p className="mb-2 text-xs font-medium text-shield">
-                Note receipt -- send this to Bob off-chain (encrypted message, Signal, etc.)
-              </p>
+            <div className="mt-5 rounded-xl border border-shield/30 bg-shield/[0.06] p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="kicker" style={{ color: "#46d6a6" }}>
+                  <ShieldIcon size={13} />
+                  Note receipt — send to the Seller off-chain
+                </p>
+                <button onClick={copyReceipt} className="btn btn-ghost px-2.5 py-1.5 text-xs">
+                  {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
               <textarea readOnly value={noteReceipt} rows={3}
-                className="w-full rounded-lg border border-surface-border bg-surface px-3 py-2 font-mono text-xs text-slate-300 select-all"
+                className="field num resize-none text-xs"
                 onClick={(e) => (e.target as HTMLTextAreaElement).select()} />
-              <p className="mt-1 text-xs text-slate-500">
-                Click to select all, then copy. Bob pastes this to claim his funds.
+              <p className="mt-2 text-xs text-fg-faint">
+                Share via an encrypted channel. The Seller pastes this to claim the funds.
               </p>
             </div>
           )}
         </FlowStep>
       </div>
 
-      <div className="mt-8 space-y-2">
+      {/* Status footer */}
+      <div className="mt-8 space-y-3">
         <StatusBadge status={statusType} message={status} />
         {txHash && (
-          <p className="font-mono text-xs text-slate-500">
-            Last tx:{" "}
-            <a href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
-              target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              {txHash}
-            </a>
-          </p>
+          <a href={`https://stellar.expert/explorer/testnet/tx/${txHash}`}
+            target="_blank" rel="noreferrer"
+            className="num inline-flex items-center gap-1.5 text-xs text-fg-muted transition-colors hover:text-accent">
+            Last tx: {txHash.slice(0, 24)}…
+            <ArrowUpRightIcon size={13} />
+          </a>
         )}
       </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+  small,
+}: {
+  label: string;
+  value: string;
+  tone: "fg" | "accent" | "shield";
+  small?: boolean;
+}) {
+  const color = tone === "accent" ? "text-accent" : tone === "shield" ? "text-shield" : "text-fg";
+  return (
+    <div className="bg-ink-900/80 px-4 py-4">
+      <span className="text-[11px] uppercase tracking-wider text-fg-faint">{label}</span>
+      <p className={`num mt-1 ${small ? "text-sm" : "text-lg"} font-semibold ${color}`}>{value}</p>
     </div>
   );
 }

@@ -101,3 +101,46 @@ export function truncateAddress(address: string, chars = 4): string {
   if (address.length <= chars * 2 + 3) return address;
   return `${address.slice(0, chars)}…${address.slice(-chars)}`;
 }
+
+/**
+ * Build an unsigned ChangeTrust transaction XDR that establishes a trustline
+ * for the given asset on the account. Returns the XDR for signing by Freighter.
+ */
+export async function buildAddTrustlineTx(
+  account: string,
+  assetCode: string,
+  assetIssuer: string
+): Promise<string> {
+  const accountRecord = await horizon.loadAccount(account);
+  const asset = new StellarSdk.Asset(assetCode, assetIssuer);
+  const tx = new StellarSdk.TransactionBuilder(accountRecord, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: config.networkPassphrase,
+  })
+    .addOperation(StellarSdk.Operation.changeTrust({ asset }))
+    .setTimeout(180)
+    .build();
+  return tx.toXDR();
+}
+
+/**
+ * Check whether an account already has a trustline for the given asset.
+ */
+export async function hasTrustline(
+  address: string,
+  assetCode: string,
+  assetIssuer: string
+): Promise<boolean> {
+  try {
+    const account = await horizon.loadAccount(address);
+    return account.balances.some(
+      (b) =>
+        b.asset_type !== "native" &&
+        "asset_code" in b &&
+        b.asset_code === assetCode &&
+        b.asset_issuer === assetIssuer
+    );
+  } catch {
+    return false;
+  }
+}

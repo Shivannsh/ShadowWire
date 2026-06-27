@@ -2,6 +2,8 @@
 
 import { useFreighter } from "@/hooks/useFreighter";
 import { truncateAddress } from "@/lib/stellar";
+import { Button } from "./ui/primitives";
+import { WalletIcon } from "./ui/icons";
 
 export function ConnectButton() {
   const {
@@ -15,31 +17,36 @@ export function ConnectButton() {
 
   if (connected && address) {
     return (
-      <div className="flex items-center gap-3">
-        <div className="hidden sm:flex flex-col items-end text-xs">
-          <span className="font-mono text-slate-300">
+      <div className="flex items-center gap-2.5">
+        <div className="hidden flex-col items-end leading-tight sm:flex">
+          <span className="num text-xs text-fg-soft">
             {truncateAddress(address, 6)}
           </span>
-          {!isCorrectNetwork && (
-            <span className="text-warn">Wrong network — switch to testnet</span>
+          {isCorrectNetwork ? (
+            <span className="flex items-center gap-1 text-[10px] font-medium text-shield">
+              <span className="h-1.5 w-1.5 rounded-full bg-shield animate-pulse-ring" />
+              Testnet
+            </span>
+          ) : (
+            <span className="text-[10px] font-medium text-warn">
+              Switch to testnet
+            </span>
           )}
         </div>
-        <button
-          onClick={disconnect}
-          className="rounded-lg border border-surface-border bg-surface-raised px-4 py-2 text-sm text-slate-300 transition hover:border-red-500/50 hover:text-red-300"
-        >
+        <Button variant="danger-ghost" onClick={disconnect} className="px-3 py-2">
           Disconnect
-        </button>
+        </Button>
       </div>
     );
   }
 
   return (
-    <button
+    <Button
       onClick={() => connect().catch((e: Error) => alert(e.message))}
-      className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-surface shadow-glow transition hover:bg-accent-glow"
+      icon={<WalletIcon size={16} />}
+      className="px-3.5 py-2"
     >
-      {installed ? "Connect Freighter" : "Install Freighter"}
-    </button>
+      {installed ? "Connect" : "Install Freighter"}
+    </Button>
   );
 }

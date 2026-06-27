@@ -10,13 +10,14 @@
 //   [4] amount
 //   [5] compliance_nullifier
 //
-// shielded_transfer (6 signals):
+// shielded_transfer (7 signals):
 //   [0] merkle_root        -- pool note-commitment tree root
 //   [1] nullifier_hash     -- spend nullifier
 //   [2] new_commitment_1   -- recipient note commitment
 //   [3] new_commitment_2   -- change note commitment
 //   [4] fee
 //   [5] pub_asset_id
+//   [6] pub_withdraw_amount -- 0 = transfer mode (hidden); > 0 = withdraw mode (revealed)
 
 const ISSUER_URL =
   process.env.NEXT_PUBLIC_MOCK_ISSUER_URL ?? "http://localhost:3001";
@@ -40,6 +41,19 @@ export interface ShieldedProofBundle {
   newCommitment2: Uint8Array;
   merkleRoot:     Uint8Array;
   newRoot:        Uint8Array;
+}
+
+/**
+ * Withdraw proof bundle = shielded spend proof + off-ramp compliance proof.
+ * Both are verified on-chain inside ShieldedPool.withdraw() (PRD §6.2).
+ */
+export interface WithdrawProofBundle extends ShieldedProofBundle {
+  /** Groth16 compliance proof bytes (BN254, Soroban-encoded) */
+  complianceProof:      Uint8Array;
+  /** Compliance public signals bytes (Soroban-encoded) */
+  compliancePubSignals: Uint8Array;
+  /** Anti-replay nullifier for the off-ramp compliance attestation */
+  complianceNullifier:  Uint8Array;
 }
 
 /** Everything Bob needs to spend his output note. */
@@ -83,6 +97,9 @@ export interface WithdrawProofInput {
   blinding:    string;
   secretKey:   string;
   recipient:   string;
+  /** The exact on-chain commitment for this note (from the note receipt).
+   *  Prevents input/output commitment formula mismatch. */
+  commitment?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,13 +107,21 @@ export interface WithdrawProofInput {
 // ---------------------------------------------------------------------------
 
 function hexToBytes32(hex: string): Uint8Array {
-  const clean = hex.replace(/^0x/i, "").padStart(64, "0");
-  return new Uint8Array(Buffer.from(clean, "hex"));
+  // Strip any number of leading 0x/0X prefixes (server can return "0x0xABCD...")
+  let clean = String(hex).trim();
+  while (clean.startsWith("0x") || clean.startsWith("0X")) clean = clean.slice(2);
+  return new Uint8Array(Buffer.from(clean.padStart(64, "0"), "hex"));
 }
 
 function fieldToBytes32(field: string): Uint8Array {
-  const n = BigInt(field);
-  return hexToBytes32(n.toString(16).padStart(64, "0"));
+  const s = String(field).trim();
+  const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
+  // If the string contains a–f it is already hex — no BigInt conversion needed
+  if (/[a-fA-F]/.test(stripped)) {
+    return hexToBytes32(stripped.padStart(64, "0"));
+  }
+  // Pure decimal field element — convert via BigInt
+  return hexToBytes32(BigInt(s).toString(16).padStart(64, "0"));
 }
 
 function bytesFromArray(arr: number[]): Uint8Array {
@@ -229,6 +254,7 @@ export async function generateShieldedTransferProof(
 // ---------------------------------------------------------------------------
 
 interface WithdrawProveResponse {
+  // Shielded spend proof
   proof:          number[];
   pubSignals:     number[];
   publicSignals:  string[];
@@ -237,21 +263,28 @@ interface WithdrawProveResponse {
   newCommitment2: string;
   merkleRoot:     string;
   newRoot:        string;
+  // Compliance proof for the off-ramp edge (PRD §6.2)
+  complianceProof:         number[];
+  compliancePubSignals:    number[];
+  compliancePublicSignals: string[];
+  complianceNullifier:     string;
 }
 
 export async function generateWithdrawProof(
   input: WithdrawProofInput
-): Promise<ShieldedProofBundle> {
+): Promise<WithdrawProofBundle> {
   const data = await post<WithdrawProveResponse>("/api/prove/withdraw", {
-    ownerField: input.ownerField,
-    value:      input.value,
-    assetId:    input.assetId ?? "3",
-    blinding:   input.blinding,
-    secretKey:  input.secretKey,
-    recipient:  input.recipient,
+    ownerField:  input.ownerField,
+    value:       input.value,
+    assetId:     input.assetId ?? "3",
+    blinding:    input.blinding,
+    secretKey:   input.secretKey,
+    recipient:   input.recipient,
+    commitment:  input.commitment,
   });
 
   return {
+    // Shielded spend proof
     proof:          bytesFromArray(data.proof),
     pubSignals:     bytesFromArray(data.pubSignals),
     spendNullifier: fieldToBytes32(data.spendNullifier),
@@ -259,6 +292,10 @@ export async function generateWithdrawProof(
     newCommitment2: fieldToBytes32(data.newCommitment2),
     merkleRoot:     fieldToBytes32(data.merkleRoot),
     newRoot:        hexToBytes32(data.newRoot),
+    // Compliance proof for off-ramp KYC gate
+    complianceProof:      bytesFromArray(data.complianceProof),
+    compliancePubSignals: bytesFromArray(data.compliancePubSignals),
+    complianceNullifier:  fieldToBytes32(data.complianceNullifier),
   };
 }
 

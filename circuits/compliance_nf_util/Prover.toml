@@ -1,0 +1,4 @@
+secret_salt      = "42"
+depositor_pubkey = "1"
+amount           = "500"
+corridor_id      = "1"

@@ -78,9 +78,10 @@ pub struct TransferEvent {
 
 #[contractevent]
 pub struct WithdrawEvent {
-    pub spend_nullifier: BytesN<32>,
-    pub recipient:       Address,
-    pub amount:          i128,
+    pub spend_nullifier:      BytesN<32>,
+    pub compliance_nullifier: BytesN<32>,
+    pub recipient:            Address,
+    pub amount:               i128,
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +368,15 @@ impl ShieldedPool {
         // Verify the compliance proof on-chain (BN254 Groth16 pairing check)
         Self::verify_compliance(&env, compliance_proof, compliance_pub_signals)?;
 
-        // Pull tokens from depositor into pool custody
+        // Pull tokens from depositor into pool custody.
+        // Proofs and compliance attestations express amounts in whole asset units
+        // (bounded by max_amount), but the SAC token holds balances in 10^decimals
+        // sub-units (stroops). Scale the attested whole-unit amount up to the token's
+        // smallest unit so the SRT actually escrowed equals the amount the proof covers.
         let asset: Address = env.storage().instance().get(&ASSET_KEY).unwrap();
         let token_client = token::Client::new(&env, &asset);
-        token_client.transfer(&depositor, &env.current_contract_address(), &amount);
+        let token_amount = amount * 10i128.pow(token_client.decimals());
+        token_client.transfer(&depositor, &env.current_contract_address(), &token_amount);
 
         // Insert note commitment into tree and update root
         Self::insert_commitment(&env, note_commitment.clone());
@@ -441,14 +447,24 @@ impl ShieldedPool {
     /// The amount IS revealed here by design: the SEP-24 anchor needs to know how
     /// much to pay out. This matches real-world AML: the off-ramp anchor knows
     /// the withdrawal amount, but cannot link it to Alice's original deposit.
+    ///
+    /// PRD §4.1 step 3 / §6.2: withdrawal is gated by the recipient's own compliance
+    /// proof — KYC tier sufficient for the receiving jurisdiction, not sanctioned,
+    /// amount within corridor limits.  Two separate Groth16 verifications happen:
+    ///   1. Shielded-transfer proof  — proves note ownership and spend authority.
+    ///   2. Compliance proof         — proves Bob is allowed to cash out here.
     pub fn withdraw(
-        env:             Env,
-        recipient:       Address,
-        amount:          i128,
-        spend_nullifier: BytesN<32>,
-        new_root:        BytesN<32>,
-        shielded_proof:  Bytes,
+        env:                  Env,
+        recipient:            Address,
+        amount:               i128,
+        spend_nullifier:      BytesN<32>,
+        new_root:             BytesN<32>,
+        shielded_proof:       Bytes,
         shielded_pub_signals: Bytes,
+        // Off-ramp compliance gate (PRD §6.2 — used at both deposit AND withdraw edges)
+        compliance_nullifier:     BytesN<32>,
+        compliance_proof:         Bytes,
+        compliance_pub_signals:   Bytes,
     ) -> Result<(), PoolError> {
         recipient.require_auth();
 
@@ -456,16 +472,17 @@ impl ShieldedPool {
             return Err(PoolError::InvalidAmount);
         }
 
-        // Double-spend check
+        // ── Shielded-transfer proof checks ────────────────────────────────────
+
+        // Double-spend check: spend nullifier must be fresh
         Self::mark_spend_nullifier(&env, &spend_nullifier)?;
 
-        // Gap 3: Same root check as transfer()
+        // Pool root must match what the prover used (prevents stale-tree proofs)
         Self::assert_pool_root_matches(&env, &shielded_pub_signals)?;
 
-        // Fix 1: pub_withdraw_amount (signal[6]) must match the `amount` parameter.
-        // The shielded_transfer circuit enforces pub_withdraw_amount == output_value_1,
-        // so this check closes the pool-drain vulnerability: a note worth 100 tokens
-        // cannot be used to withdraw 1,000,000 tokens.
+        // pub_withdraw_amount (signal[6]) must match the `amount` arg.
+        // Circuit enforces pub_withdraw_amount == output_value_1, so a note worth
+        // 100 tokens cannot be used to drain 1,000,000 tokens from the pool.
         // shielded public signal layout:
         //   [0] merkle_root  [1] nullifier_hash  [2] new_commitment_1
         //   [3] new_commitment_2  [4] fee  [5] pub_asset_id  [6] pub_withdraw_amount
@@ -475,19 +492,47 @@ impl ShieldedPool {
             return Err(PoolError::WithdrawAmountMismatch);
         }
 
-        // Verify the shielded proof
+        // Verify the shielded spend proof on-chain (BN254 Groth16)
         Self::verify_shielded(&env, shielded_proof, shielded_pub_signals)?;
+
+        // ── Compliance proof checks (off-ramp edge, PRD §6.2) ─────────────────
+
+        // Anti-replay: this KYC attestation can only be used once per corridor
+        Self::mark_compliance_nullifier(&env, &compliance_nullifier)?;
+
+        // Compliance proof must reference the live KYC registry root
+        Self::assert_compliance_root_matches(&env, &compliance_pub_signals)?;
+
+        // Compliance proof's amount (signal[4]) must equal the withdrawal amount.
+        // This prevents Bob from generating a compliance proof for 1 token but
+        // withdrawing his full 1000-token note.
+        // compliance public signal layout:
+        //   [0] merkle_root  [1] corridor_id  [2] min_kyc_tier  [3] max_amount
+        //   [4] amount       [5] compliance_nullifier
+        let proof_compliance_amount = Self::extract_signal(&env, &compliance_pub_signals, 4);
+        if proof_compliance_amount != expected_amount_signal {
+            return Err(PoolError::AmountMismatch);
+        }
+
+        // Verify the compliance proof on-chain (BN254 Groth16)
+        Self::verify_compliance(&env, compliance_proof, compliance_pub_signals)?;
+
+        // ── State update and token release ────────────────────────────────────
 
         env.storage().instance().set(&ROOT_KEY, &new_root);
         env.storage().instance().extend_ttl(TTL_MIN, TTL_EXTEND);
 
-        // Release tokens from pool to recipient
+        // Release tokens from pool custody to recipient. Scale the whole-unit proof
+        // amount up to the token's smallest unit (see deposit() for rationale) so the
+        // SRT released equals the note value the proof attests.
         let asset: Address = env.storage().instance().get(&ASSET_KEY).unwrap();
         let token_client = token::Client::new(&env, &asset);
-        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+        let token_amount = amount * 10i128.pow(token_client.decimals());
+        token_client.transfer(&env.current_contract_address(), &recipient, &token_amount);
 
         WithdrawEvent {
             spend_nullifier,
+            compliance_nullifier,
             recipient,
             amount,
         }

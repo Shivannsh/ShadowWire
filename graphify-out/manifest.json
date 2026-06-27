@@ -1,0 +1,332 @@
+{
+  "/Users/shivansh/Desktop/hackathon/clearPass/circuits/compliance/inputs.json": {
+    "mtime": 1782413070.4876785,
+    "ast_hash": "e42d5b700365577628254ea7db4f4299",
+    "semantic_hash": "e42d5b700365577628254ea7db4f4299"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/circuits/pipeline_test/inputs.json": {
+    "mtime": 1782322053.1503031,
+    "ast_hash": "0644de38f93f50efc60b2ed2551e18b2",
+    "semantic_hash": "0644de38f93f50efc60b2ed2551e18b2"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/circuits/shielded_transfer/inputs.json": {
+    "mtime": 1782335605.1194365,
+    "ast_hash": "839fcbee146f17890dadb8ce892def4c",
+    "semantic_hash": "839fcbee146f17890dadb8ce892def4c"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/contracts/compliance_registry/src/lib.rs": {
+    "mtime": 1782322546.748584,
+    "ast_hash": "37915f70d2535fbce8c2e97f0ecc09e7",
+    "semantic_hash": "37915f70d2535fbce8c2e97f0ecc09e7"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/contracts/compliance_verifier/src/lib.rs": {
+    "mtime": 1782322522.9012911,
+    "ast_hash": "9f4b4f399000d35ef32a9001686ed9ca",
+    "semantic_hash": "9f4b4f399000d35ef32a9001686ed9ca"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/contracts/shielded_pool/src/lib.rs": {
+    "mtime": 1782451414.0093205,
+    "ast_hash": "92eb5986e461bd68ddcd8d96aa2b52c4",
+    "semantic_hash": "92eb5986e461bd68ddcd8d96aa2b52c4"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/contracts/shielded_transfer_verifier/src/lib.rs": {
+    "mtime": 1782322542.7519841,
+    "ast_hash": "2a374aeed3a857403cd8ea30c273a63d",
+    "semantic_hash": "2a374aeed3a857403cd8ea30c273a63d"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/.eslintrc.json": {
+    "mtime": 1782323251.3247848,
+    "ast_hash": "9b8be5ef96ddd69ecd1ddc1554c61a88",
+    "semantic_hash": "9b8be5ef96ddd69ecd1ddc1554c61a88"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/next-env.d.ts": {
+    "mtime": 1782323119.9609888,
+    "ast_hash": "b5ed9dd8b4c5ba8e5ab8e6a379c15838",
+    "semantic_hash": "b5ed9dd8b4c5ba8e5ab8e6a379c15838"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/next.config.js": {
+    "mtime": 1782323116.483286,
+    "ast_hash": "368f129b1abbe2d82b25351cde2785d9",
+    "semantic_hash": "368f129b1abbe2d82b25351cde2785d9"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/package.json": {
+    "mtime": 1782323112.9769173,
+    "ast_hash": "b43150926ddcc92254fa007817edde80",
+    "semantic_hash": "b43150926ddcc92254fa007817edde80"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/postcss.config.js": {
+    "mtime": 1782323116.8561702,
+    "ast_hash": "8640f9b2e6475cc3f5b1ff4548925765",
+    "semantic_hash": "8640f9b2e6475cc3f5b1ff4548925765"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/public/testnet-addresses.json": {
+    "mtime": 1782504435.1949513,
+    "ast_hash": "2d3c3de29ac797e93268916a887a193c",
+    "semantic_hash": "2d3c3de29ac797e93268916a887a193c"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/app/alice/page.tsx": {
+    "mtime": 1782500790.9045784,
+    "ast_hash": "93fb0b64aa0571bb5c744a902d854665",
+    "semantic_hash": "93fb0b64aa0571bb5c744a902d854665"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/app/api/anchor/[...slug]/route.ts": {
+    "mtime": 1782499648.7937868,
+    "ast_hash": "107b7993017ab25aa59a538260649dd0",
+    "semantic_hash": "107b7993017ab25aa59a538260649dd0"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/app/bob/page.tsx": {
+    "mtime": 1782501249.8026268,
+    "ast_hash": "cc8c0ff3b25d508b1a288a5bb9a02e34",
+    "semantic_hash": "cc8c0ff3b25d508b1a288a5bb9a02e34"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/app/layout.tsx": {
+    "mtime": 1782323187.2936914,
+    "ast_hash": "c91eb757d79d7372e9f56d4453a1bcda",
+    "semantic_hash": "c91eb757d79d7372e9f56d4453a1bcda"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/app/page.tsx": {
+    "mtime": 1782323211.7382638,
+    "ast_hash": "a80aecede8fb0e6f1af71fe015df0d69",
+    "semantic_hash": "a80aecede8fb0e6f1af71fe015df0d69"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/app/providers.tsx": {
+    "mtime": 1782499023.172052,
+    "ast_hash": "196edeb3a13d6f7d0acc9b96173717dd",
+    "semantic_hash": "196edeb3a13d6f7d0acc9b96173717dd"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/components/ConnectButton.tsx": {
+    "mtime": 1782323189.7137213,
+    "ast_hash": "0751d65b3c62b85415cf9fbdc9f5bd15",
+    "semantic_hash": "0751d65b3c62b85415cf9fbdc9f5bd15"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/components/FlowStep.tsx": {
+    "mtime": 1782323195.5490746,
+    "ast_hash": "baabae2dc82212d2c551115bf2d6f06e",
+    "semantic_hash": "baabae2dc82212d2c551115bf2d6f06e"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/components/Header.tsx": {
+    "mtime": 1782323192.07434,
+    "ast_hash": "3d753cabe73ae4c485c35d655067376b",
+    "semantic_hash": "3d753cabe73ae4c485c35d655067376b"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/components/PrivacyComparison.tsx": {
+    "mtime": 1782323202.4153502,
+    "ast_hash": "982b241a3a3df3e1c13839227c21196d",
+    "semantic_hash": "982b241a3a3df3e1c13839227c21196d"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/context/FreighterContext.tsx": {
+    "mtime": 1782499022.408941,
+    "ast_hash": "c0a4a796e1105b47792eacab48ff3314",
+    "semantic_hash": "c0a4a796e1105b47792eacab48ff3314"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/hooks/useFreighter.ts": {
+    "mtime": 1782499022.6865299,
+    "ast_hash": "6ae2808c61712fb4fd32dd3334f8bc6c",
+    "semantic_hash": "6ae2808c61712fb4fd32dd3334f8bc6c"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/hooks/useTestnetAddresses.ts": {
+    "mtime": 1782323140.5779235,
+    "ast_hash": "50df36cf8ab8aa1b8af45c8cd6328d48",
+    "semantic_hash": "50df36cf8ab8aa1b8af45c8cd6328d48"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/addresses.ts": {
+    "mtime": 1782323134.6112478,
+    "ast_hash": "4cedfb439d2b375e8053b65f09ae1384",
+    "semantic_hash": "4cedfb439d2b375e8053b65f09ae1384"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/noteWallet.ts": {
+    "mtime": 1782333959.8325193,
+    "ast_hash": "41cf623862496c72823bc423ab372559",
+    "semantic_hash": "41cf623862496c72823bc423ab372559"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/pool.ts": {
+    "mtime": 1782451414.009408,
+    "ast_hash": "aedfe70a987cabb7ffd6dcdaa9ae077d",
+    "semantic_hash": "aedfe70a987cabb7ffd6dcdaa9ae077d"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/proofs.ts": {
+    "mtime": 1782504746.6295593,
+    "ast_hash": "fb9df5d07d634af15f434f7903632b16",
+    "semantic_hash": "fb9df5d07d634af15f434f7903632b16"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/sep24.ts": {
+    "mtime": 1782500601.6766412,
+    "ast_hash": "612a0e926a9f7c0c01bd33c1686710de",
+    "semantic_hash": "612a0e926a9f7c0c01bd33c1686710de"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/stellar.ts": {
+    "mtime": 1782500158.7794275,
+    "ast_hash": "f3c7cce9b09f7d6427f16f691213b5be",
+    "semantic_hash": "f3c7cce9b09f7d6427f16f691213b5be"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/src/lib/transactions.ts": {
+    "mtime": 1782323146.6743565,
+    "ast_hash": "e6a18d383e0ad34ac3d4658fe1d7074c",
+    "semantic_hash": "e6a18d383e0ad34ac3d4658fe1d7074c"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/tailwind.config.ts": {
+    "mtime": 1782323119.42914,
+    "ast_hash": "59a5be4f4b929318a9b410dc11a4428a",
+    "semantic_hash": "59a5be4f4b929318a9b410dc11a4428a"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/frontend/tsconfig.json": {
+    "mtime": 1782332204.6741421,
+    "ast_hash": "d138e157175f87ee37774c3d2015de6f",
+    "semantic_hash": "d138e157175f87ee37774c3d2015de6f"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/mock-issuer/package.json": {
+    "mtime": 1782333798.556653,
+    "ast_hash": "00246ace2d63a6e8e504c7155fad5e66",
+    "semantic_hash": "00246ace2d63a6e8e504c7155fad5e66"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/mock-issuer/src/build-tree.ts": {
+    "mtime": 1782323409.2907894,
+    "ast_hash": "a440a9cdae95d5b0e738b58fe2e0d035",
+    "semantic_hash": "a440a9cdae95d5b0e738b58fe2e0d035"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/mock-issuer/src/index.ts": {
+    "mtime": 1782506185.0326095,
+    "ast_hash": "b2162349efedf9ad86921ae4c45701ee",
+    "semantic_hash": "b2162349efedf9ad86921ae4c45701ee"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/mock-issuer/src/merkle.ts": {
+    "mtime": 1782323401.3578312,
+    "ast_hash": "562a1917bf5ca13569665f862be635d0",
+    "semantic_hash": "562a1917bf5ca13569665f862be635d0"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/mock-issuer/src/pool-state.ts": {
+    "mtime": 1782501664.596863,
+    "ast_hash": "c84823a267f814ecba37799dc356d770",
+    "semantic_hash": "c84823a267f814ecba37799dc356d770"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/package.json": {
+    "mtime": 1782324049.0102892,
+    "ast_hash": "5fe05b0747105ead1b46a88cd008d769",
+    "semantic_hash": "5fe05b0747105ead1b46a88cd008d769"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/corridor-e2e.mjs": {
+    "mtime": 1782503658.0227878,
+    "ast_hash": "46def3fea7dd38be160aa85a331bec82",
+    "semantic_hash": "46def3fea7dd38be160aa85a331bec82"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/corridor-e2e.sh": {
+    "mtime": 1782324033.5372672,
+    "ast_hash": "a1a8ac005fe98d8cb92bf16882130016",
+    "semantic_hash": "a1a8ac005fe98d8cb92bf16882130016"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/deploy-pool-v8.mjs": {
+    "mtime": 1782504165.1851032,
+    "ast_hash": "e0f2b986f5658fa73d7b4acf0d395d74",
+    "semantic_hash": "e0f2b986f5658fa73d7b4acf0d395d74"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/deploy.sh": {
+    "mtime": 1782327890.3709118,
+    "ast_hash": "0db4a05441b3fbd642e892782f6b1caf",
+    "semantic_hash": "0db4a05441b3fbd642e892782f6b1caf"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/encode_bn254_for_soroban.mjs": {
+    "mtime": 1782322046.3201988,
+    "ast_hash": "3f984e71bdb1439608a57695594335eb",
+    "semantic_hash": "3f984e71bdb1439608a57695594335eb"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/fund-accounts.sh": {
+    "mtime": 1782322802.6789875,
+    "ast_hash": "46b1bfb526c97642fc8b9d2ed6dbf6ad",
+    "semantic_hash": "46b1bfb526c97642fc8b9d2ed6dbf6ad"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/install-tools.sh": {
+    "mtime": 1782321991.968006,
+    "ast_hash": "cc0cf7075eafdc6f55eface1d7a2eed3",
+    "semantic_hash": "cc0cf7075eafdc6f55eface1d7a2eed3"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/lib/common.sh": {
+    "mtime": 1782322046.3227236,
+    "ast_hash": "f73b4763d0c3d2bef5dd9f6865caaa1d",
+    "semantic_hash": "f73b4763d0c3d2bef5dd9f6865caaa1d"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/pipeline-test.sh": {
+    "mtime": 1782323800.6762466,
+    "ast_hash": "125b8aa46c4ce451b2ff54a8609bb092",
+    "semantic_hash": "125b8aa46c4ce451b2ff54a8609bb092"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/run-circuit.sh": {
+    "mtime": 1782327339.0168357,
+    "ast_hash": "be9e79374ab978bc7414125e0d2cf443",
+    "semantic_hash": "be9e79374ab978bc7414125e0d2cf443"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/run-demo.sh": {
+    "mtime": 1782323861.791471,
+    "ast_hash": "cda26bc73d5083fe5c2616828c8f9b20",
+    "semantic_hash": "cda26bc73d5083fe5c2616828c8f9b20"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/setup-compliance-inputs.sh": {
+    "mtime": 1782323530.3581738,
+    "ast_hash": "6e36b6527a6874e54de7940788bdc3c7",
+    "semantic_hash": "6e36b6527a6874e54de7940788bdc3c7"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/scripts/update-vks-and-pool.sh": {
+    "mtime": 1782327914.7780728,
+    "ast_hash": "4d173aa5b2acb23f2b655fbe8013083c",
+    "semantic_hash": "4d173aa5b2acb23f2b655fbe8013083c"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/skills-lock.json": {
+    "mtime": 1782318426.3261087,
+    "ast_hash": "03dede1f4eabb5c87e0c4ac5287d04f1",
+    "semantic_hash": "03dede1f4eabb5c87e0c4ac5287d04f1"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/testnet-addresses.json": {
+    "mtime": 1782504435.193934,
+    "ast_hash": "2d3c3de29ac797e93268916a887a193c",
+    "semantic_hash": "2d3c3de29ac797e93268916a887a193c"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/agentic-payments/SKILL.md": {
+    "mtime": 1782318426.2583141,
+    "ast_hash": "17774bc2b9c78b40834b65927a92bff9",
+    "semantic_hash": "17774bc2b9c78b40834b65927a92bff9"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/assets/SKILL.md": {
+    "mtime": 1782318426.2706978,
+    "ast_hash": "933288ffe22a4b383b7392b5cfba4ee6",
+    "semantic_hash": "933288ffe22a4b383b7392b5cfba4ee6"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/dapp/SKILL.md": {
+    "mtime": 1782318426.2808473,
+    "ast_hash": "3b648cab1c849ef814fa823669c435b5",
+    "semantic_hash": "3b648cab1c849ef814fa823669c435b5"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/data/SKILL.md": {
+    "mtime": 1782318426.291143,
+    "ast_hash": "4672ef7f07627d5bb27de730670dfeb4",
+    "semantic_hash": "4672ef7f07627d5bb27de730670dfeb4"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/soroban/SKILL.md": {
+    "mtime": 1782318426.301391,
+    "ast_hash": "bef35a9089035b5d0d9b90a9682f3202",
+    "semantic_hash": "bef35a9089035b5d0d9b90a9682f3202"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/standards/SKILL.md": {
+    "mtime": 1782318426.311898,
+    "ast_hash": "81bd930e8d3ffc3273512e3bdc445f6d",
+    "semantic_hash": "81bd930e8d3ffc3273512e3bdc445f6d"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/.agents/skills/zk-proofs/SKILL.md": {
+    "mtime": 1782318426.3216326,
+    "ast_hash": "3cfdd8a89f6d363789be295652cfbd77",
+    "semantic_hash": "3cfdd8a89f6d363789be295652cfbd77"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/HUMAN_ACTION_REQUIRED.md": {
+    "mtime": 1782324045.0914826,
+    "ast_hash": "f166bd50c5931285ccd0a9704dbf33bc",
+    "semantic_hash": "f166bd50c5931285ccd0a9704dbf33bc"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/PRD.md": {
+    "mtime": 1782318108.7404516,
+    "ast_hash": "00e57fb56d5443dffb534e97ef58bad8",
+    "semantic_hash": "00e57fb56d5443dffb534e97ef58bad8"
+  },
+  "/Users/shivansh/Desktop/hackathon/clearPass/README.md": {
+    "mtime": 1782324048.3227954,
+    "ast_hash": "8f35d8fffb24bf08777ef31635bdc0b5",
+    "semantic_hash": "8f35d8fffb24bf08777ef31635bdc0b5"
+  }
+}

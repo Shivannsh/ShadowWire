@@ -27,6 +27,7 @@ import {
   computeMerklePath,
   computeNewRoot,
   assertRootMatchesChain,
+  readPoolRoot,
 } from "./pool-state.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -40,13 +41,12 @@ const CIRCUITS = ["compliance", "shielded_transfer"] as const;
 // ---------------------------------------------------------------------------
 // KYC compliance state.
 //
-// The compliance circuit now:
-//   - Takes `depositor_pubkey` as a private input
-//   - RETURNS the compliance_nullifier as a circuit-computed public output
-//     (slot 5 in the public signals)
+// The compliance circuit takes `compliance_nullifier` as a PUBLIC INPUT (slot 5).
+// The mock-issuer MUST pre-compute it using the compliance_nf_util circuit before
+// generating the Groth16 proof, then pass the computed value as the input.
 //
-// This means the mock-issuer does NOT need to pre-compute the nullifier.
-// The Groth16 proof itself carries the nullifier as signal[5].
+// Public signal layout: [0]=merkle_root [1]=corridor_id [2]=min_kyc_tier
+//                        [3]=max_amount  [4]=amount      [5]=compliance_nullifier
 // ---------------------------------------------------------------------------
 
 const DEMO_KYC_BASE = {
@@ -249,6 +249,27 @@ function computeNoteValues(privateInputs: {
   }
 }
 
+/**
+ * Normalize any field element representation to a lowercase 64-char hex string
+ * (no 0x prefix). This is the canonical form used by loadAllCommitments().
+ *
+ * Accepted input forms:
+ *   - "0x" or "0X" prefixed hex  → strip prefix, lowercase, pad
+ *   - raw hex string (contains a-f)  → lowercase, pad
+ *   - decimal integer string (only 0-9) → BigInt → hex, pad
+ */
+function fieldToHex64(field: string): string {
+  const s = String(field).trim();
+  // Strip 0x/0X prefix if present
+  const stripped = (s.startsWith("0x") || s.startsWith("0X")) ? s.slice(2) : s;
+  // If any character is a-f or A-F the string is already hex
+  if (/[a-fA-F]/.test(stripped)) {
+    return stripped.toLowerCase().padStart(64, "0");
+  }
+  // Pure decimal digits — convert via BigInt
+  return BigInt(s).toString(16).padStart(64, "0");
+}
+
 // Compute just the commitment for a note (without full hash_util run)
 function computeNoteCommitment(
   owner: string, value: string, assetId: string, blinding: string
@@ -267,6 +288,52 @@ function computeNoteCommitment(
     outBlinding2: "1",
   });
   return vals.inputCommitment;
+}
+
+// ---------------------------------------------------------------------------
+// Compute compliance nullifier using compliance_nf_util (nargo execute).
+// Uses the same Poseidon2 formula as compliance.nr so there is no JS dependency
+// on Poseidon2.  Returns the nullifier as a 0x-prefixed hex field string.
+// ---------------------------------------------------------------------------
+
+function computeComplianceNullifier(
+  secretSalt:      string,
+  depositorPubkey: string,
+  amount:          string,
+  corridorId:      string,
+): string {
+  const utilDir = path.join(ROOT, "circuits/compliance_nf_util");
+  const tmpDir  = fs.mkdtempSync(path.join(os.tmpdir(), "shadowwire-compnf-"));
+  try {
+    // Copy circuit source into a temp workspace to avoid concurrent-write races.
+    execSync(`cp -r "${utilDir}/Nargo.toml" "${utilDir}/src" "${tmpDir}/"`, { stdio: "pipe" });
+
+    const proverToml = path.join(tmpDir, "Prover.toml");
+    fs.writeFileSync(proverToml, [
+      `secret_salt      = "${secretSalt}"`,
+      `depositor_pubkey = "${depositorPubkey}"`,
+      `amount           = "${amount}"`,
+      `corridor_id      = "${corridorId}"`,
+    ].join("\n"));
+
+    const stdout = execSync(`"${NARGO}" execute`, {
+      cwd: tmpDir,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const line = stdout.split("\n").find(l => l.includes("Circuit output:"));
+    if (!line) {
+      throw new Error(`compliance_nf_util: 'Circuit output:' not found:\n${stdout}`);
+    }
+    const match = line.match(/Circuit output:\s*(0x[0-9a-fA-F]+)/);
+    if (!match) {
+      throw new Error(`compliance_nf_util: could not parse hex from: ${line}`);
+    }
+    return match[1];
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,56 +367,17 @@ app.get("/api/attestation", (_req, res) => {
 // ---------------------------------------------------------------------------
 // POST /api/prove/compliance
 //
-// Body: { amount: string }
+// Body: { amount: string, ownerField?: string }
 // Returns: { proof, pubSignals, publicSignals, complianceNullifier, merkleRoot }
+//
+// compliance_nullifier is a PUBLIC INPUT (slot 5).  We pre-compute it via
+// compliance_nf_util (nargo execute), then pass it to the Groth16 prover.
+// The circuit constrains it to equal the Poseidon2 hash of the private inputs,
+// so the proof guarantees it was correctly derived.
+//
+// Public signal layout: [0]=merkle_root [1]=corridor_id [2]=min_kyc_tier
+//                        [3]=max_amount  [4]=amount      [5]=compliance_nullifier
 // ---------------------------------------------------------------------------
-
-// Pre-compute the per-user compliance nullifier using nargo execute.
-// The compliance circuit accepts compliance_nullifier as a public INPUT and
-// verifies it equals the circuit-computed value -- so the prover must provide
-// the correct value upfront.  We derive it by running nargo execute on the
-// compliance circuit and parsing the "Circuit output:" line from stdout.
-function computeComplianceNullifier(
-  depositorPubkey: string,
-  amount: string
-): string {
-  const circuitDir = path.join(ROOT, "circuits/compliance");
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shadowwire-comp-nf-"));
-  try {
-    execSync(`cp -r "${circuitDir}/Nargo.toml" "${circuitDir}/src" "${tmpDir}/"`, { stdio: "pipe" });
-    const proverToml = path.join(tmpDir, "Prover.toml");
-    const toml = [
-      `secret_salt      = "${DEMO_KYC_BASE.secret_salt}"`,
-      `kyc_tier         = "${DEMO_KYC_BASE.kyc_tier}"`,
-      `sanctioned_flag  = "${DEMO_KYC_BASE.sanctioned_flag}"`,
-      `country_code     = "${DEMO_KYC_BASE.country_code}"`,
-      `merkle_index     = "${DEMO_KYC_BASE.merkle_index}"`,
-      `merkle_siblings  = [${DEMO_KYC_BASE.merkle_siblings.map(s => `"${s}"`).join(", ")}]`,
-      `depositor_pubkey = "${depositorPubkey}"`,
-      `merkle_root          = "${DEMO_KYC_BASE.merkle_root}"`,
-      `corridor_id          = "${DEMO_KYC_BASE.corridor_id}"`,
-      `min_kyc_tier         = "${DEMO_KYC_BASE.min_kyc_tier}"`,
-      `max_amount           = "${DEMO_KYC_BASE.max_amount}"`,
-      `amount               = "${amount}"`,
-      // placeholder so nargo execute can check the Prover.toml format;
-      // the actual nullifier value will be in the Circuit output line
-      `compliance_nullifier = "0"`,
-    ].join("\n");
-    fs.writeFileSync(proverToml, toml);
-
-    // nargo execute prints: Circuit output: 0xNULLIFIER
-    const stdout = execSync(`"${NARGO}" execute`, {
-      cwd: tmpDir, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"],
-    });
-    const line = stdout.split("\n").find((l: string) => l.includes("Circuit output:"));
-    if (!line) throw new Error(`compliance nargo execute: 'Circuit output:' not found\n${stdout}`);
-    const match = line.match(/Circuit output:\s*(0x[0-9a-fA-F]+)/);
-    if (!match) throw new Error(`compliance nargo execute: could not parse nullifier from: ${line}`);
-    return match[1];
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-}
 
 app.post("/api/prove/compliance", (req, res) => {
   const { amount, ownerField } = req.body as { amount?: string; ownerField?: string };
@@ -358,12 +386,15 @@ app.post("/api/prove/compliance", (req, res) => {
   const depositorPubkey = ownerField ?? "1";
 
   try {
-    // Step 1: Pre-compute the per-user nullifier (requires nargo execute)
-    const complianceNullifier = computeComplianceNullifier(depositorPubkey, String(amount));
+    // Step 1: pre-compute the nullifier using the compliance_nf_util circuit.
+    const complianceNullifier = computeComplianceNullifier(
+      DEMO_KYC_BASE.secret_salt,
+      depositorPubkey,
+      String(amount),
+      DEMO_KYC_BASE.corridor_id,
+    );
 
-    // Step 2: Generate the full Groth16 proof with the correct nullifier as public input
-    // Public signal layout: [0]=merkle_root [1]=corridor_id [2]=min_kyc_tier
-    //                        [3]=max_amount  [4]=amount      [5]=compliance_nullifier
+    // Step 2: generate the Groth16 proof with the nullifier as a public input.
     const inputs = {
       ...DEMO_KYC_BASE,
       amount:               String(amount),
@@ -372,6 +403,7 @@ app.post("/api/prove/compliance", (req, res) => {
     };
     const result = generateProof("compliance", inputs);
 
+    // signal[5] is the compliance_nullifier (public input verified by the circuit).
     res.json({
       proof:               result.proof,
       pubSignals:          result.pubSignals,
@@ -479,6 +511,8 @@ app.post("/api/prove/transfer", async (req, res) => {
     fee?:            string;
     outputBlinding1?: string;
     outputBlinding2?: string;
+    /** Caller-supplied commitment to skip recomputation (avoids formula mismatch). */
+    commitment?:     string;
   };
 
   if (!body.ownerField || !body.value || !body.blinding || !body.secretKey || !body.recipient) {
@@ -500,25 +534,39 @@ app.post("/api/prove/transfer", async (req, res) => {
   const outputBlinding2 = body.outputBlinding2 ?? randomField();
 
   try {
-    // Step 1: Compute the input note commitment
-    const commitment = computeNoteCommitment(
-      body.ownerField, body.value, assetId, body.blinding
-    );
+    // Step 1: Resolve the input note commitment.
+    // Use caller-supplied value if provided to avoid input-commitment formula mismatch.
+    // fieldToHex64 handles both 0x-hex and decimal field element strings.
+    const commitment = body.commitment
+      ? fieldToHex64(body.commitment)
+      : fieldToHex64(computeNoteCommitment(body.ownerField, body.value, assetId, body.blinding));
 
-    // Step 2: Load the real pool tree and find the Merkle path for this commitment
-    const { leaves } = await loadAllCommitments();
-    const merklePath = computeMerklePath(
-      leaves,
-      leaves.findIndex(l => l.toLowerCase().replace(/^0x/, "") ===
-                            commitment.toLowerCase().replace(/^0x/, ""))
-    );
+    // Step 2: Load the real pool tree and find the Merkle path.
+    // Poll for up to 60 seconds to handle Soroban testnet RPC propagation delay.
+    let leaves: string[] = [];
+    let targetIdx = -1;
+    const pollDeadline = Date.now() + 60_000;
+    while (Date.now() < pollDeadline) {
+      ({ leaves } = await loadAllCommitments());
+      targetIdx = leaves.findIndex(
+        l => l.toLowerCase().replace(/^0x/, "") === commitment
+      );
+      if (targetIdx !== -1) break;
+      console.log(
+        `[transfer] Waiting for commitment ${commitment.slice(0, 8)}... ` +
+        `to appear on-chain (${leaves.length} leaf/leaves visible so far)...`
+      );
+      await new Promise(r => setTimeout(r, 3000));
+    }
 
-    if (merklePath.index < 0) {
+    if (targetIdx === -1) {
       throw new Error(
-        `Note commitment ${commitment.slice(0, 12)}... not found in pool. ` +
+        `Note commitment ${commitment.slice(0, 12)}... not found in pool after 60s. ` +
         `Deposit the note first.`
       );
     }
+
+    const merklePath = computeMerklePath(leaves, targetIdx);
 
     // Step 3: Compute all public values using hash_util + real siblings
     const pubVals = computeNoteValues({
@@ -572,14 +620,23 @@ app.post("/api/prove/transfer", async (req, res) => {
 
     const result = generateProof("shielded_transfer", inputs);
 
-    // Bob's note receipt: everything Bob needs to spend his output note
+    // Normalize output commitments to the same hex form that loadAllCommitments
+    // returns. publicSignals[] values are decimal strings from snarkjs; the
+    // on-chain leaves come back as hex. Keeping them in the same format ensures
+    // the findIndex comparison in the withdraw step always succeeds.
+    const actualCommit1 = fieldToHex64(result.publicSignals[2] ?? pubVals.newCommitment1);
+    const actualCommit2 = fieldToHex64(result.publicSignals[3] ?? pubVals.newCommitment2);
+    const actualNewRoot = computeNewRoot(leaves, "0x" + actualCommit1, "0x" + actualCommit2);
+
+    // Bob's note receipt: everything Bob needs to spend his output note.
+    // commitment is hex-normalized so it directly matches the on-chain leaf.
     const bobNote = {
       owner:      body.recipient,
       value:      outputValue1,
       assetId,
       blinding:   outputBlinding1,
-      secretKey:  randomField(),  // fresh spend key for Bob's note
-      commitment: pubVals.newCommitment1,
+      secretKey:  randomField(),
+      commitment: "0x" + actualCommit1,  // 0x-hex, 64 chars — ready for leaf comparison
     };
 
     res.json({
@@ -587,10 +644,10 @@ app.post("/api/prove/transfer", async (req, res) => {
       pubSignals:     result.pubSignals,
       publicSignals:  result.publicSignals,
       spendNullifier: result.publicSignals[1] ?? "0",
-      newCommitment1: result.publicSignals[2] ?? "0",
-      newCommitment2: result.publicSignals[3] ?? "0",
+      newCommitment1: actualCommit1,   // hex (no 0x) — callers use fieldToHex on this
+      newCommitment2: actualCommit2,
       merkleRoot:     result.publicSignals[0] ?? "0",
-      newRoot,
+      newRoot:        actualNewRoot,
       bobNote,
     });
   } catch (err: unknown) {
@@ -601,19 +658,27 @@ app.post("/api/prove/transfer", async (req, res) => {
 // ---------------------------------------------------------------------------
 // POST /api/prove/withdraw
 //
-// Same as transfer but the full output value goes to recipient (no change).
-// Uses the same shielded_transfer circuit -- the change note gets value = 0.
+// Generates TWO Groth16 proofs for Bob's off-ramp:
+//   1. shielded_transfer proof  — proves Bob owns the note and authorises spending.
+//      (pub_withdraw_amount = outputValue1, dual-mode withdraw path)
+//   2. compliance proof         — proves Bob is KYC'd for the receiving corridor.
+//      (PRD §6.2 — used at BOTH deposit and withdraw edges)
+//
+// Both proofs are verified on-chain inside ShieldedPool.withdraw().
 // ---------------------------------------------------------------------------
 
 app.post("/api/prove/withdraw", async (req, res) => {
-  // Internally same as transfer with fee=0, outputValue1 = full note value
   const body = req.body as {
-    ownerField?: string;
-    value?:      string;
-    assetId?:    string;
-    blinding?:   string;
-    secretKey?:  string;
-    recipient?:  string;
+    ownerField?:  string;
+    value?:       string;
+    assetId?:     string;
+    blinding?:    string;
+    secretKey?:   string;
+    recipient?:   string;
+    /** If provided, use this commitment directly instead of recomputing.
+     *  Bob's note commitment is an OUTPUT commitment (different formula from input),
+     *  so recomputation via computeNoteCommitment would produce the wrong value. */
+    commitment?:  string;
   };
 
   if (!body.ownerField || !body.value || !body.blinding || !body.secretKey || !body.recipient) {
@@ -621,62 +686,176 @@ app.post("/api/prove/withdraw", async (req, res) => {
     return;
   }
 
-  // Forward to transfer with outputValue1 = value, fee = 0
-  req.body = { ...body, outputValue1: body.value, fee: "0" };
-  // Re-invoke the transfer handler by calling it directly
-  const transferReq = { ...req, body: { ...body, outputValue1: body.value, fee: "0" } };
-
-  // Call transfer logic inline (could also be a shared function)
   const assetId       = body.assetId ?? ASSET_ID;
-  const outputValue1  = body.value;
+  const outputValue1  = body.value;  // full note value goes to recipient
   const fee           = "0";
-  const outputValue2  = "0";
+  const outputValue2  = "0";        // no change note
   const outputBlinding1 = randomField();
   const outputBlinding2 = randomField();
 
   try {
-    const commitment = computeNoteCommitment(body.ownerField, body.value, assetId, body.blinding);
-    const { leaves } = await loadAllCommitments();
-    const merklePath = computeMerklePath(
-      leaves,
-      leaves.findIndex(l => l.toLowerCase().replace(/^0x/, "") ===
-                            commitment.toLowerCase().replace(/^0x/, ""))
+    // ── Step 1: Shielded spend proof ──────────────────────────────────────────
+
+    // Use the caller-supplied commitment if available (avoids input vs output
+    // commitment formula mismatch for Bob's note).
+    // fieldToHex64 normalises 0x-hex, raw hex, or decimal to 64-char lowercase hex.
+    const commitment = fieldToHex64(
+      body.commitment ??
+      computeNoteCommitment(body.ownerField, body.value, assetId, body.blinding)
     );
 
-    if (merklePath.index < 0) {
-      throw new Error(`Note commitment not found in pool. Deposit the note first.`);
+    // ── Phase 1: Wait until Bob's commitment appears AND the pool root is stable ──
+    //
+    // Alice's transfer adds TWO leaves (Bob's note + change note). The Soroban
+    // testnet RPC can lag: one leaf might appear before the other, and the RPC
+    // node might serve a stale cached root that doesn't reflect the full insertion.
+    //
+    // We wait until:
+    //   (a) Bob's commitment is visible in loadAllCommitments(), AND
+    //   (b) tree_builder's computed root equals readPoolRoot(), AND
+    //   (c) That root is confirmed STABLE across 2 extra reads (3 s apart).
+    //
+    // Stability confirmation prevents the common failure where a momentarily-
+    // lagging RPC node briefly matches but then refreshes to a different value
+    // while nargo is running (~30 s), causing the proof's merkle_root to be stale.
+
+    let wLeaves: string[] = [];
+    let wTargetIdx = -1;
+    let merklePath = { root: "", siblings: [] as string[], index: -1 };
+
+    const wPollDeadline = Date.now() + 180_000; // 3 min total
+    outer: while (Date.now() < wPollDeadline) {
+      ({ leaves: wLeaves } = await loadAllCommitments());
+      wTargetIdx = wLeaves.findIndex(l => l.toLowerCase().replace(/^0x/, "") === commitment);
+
+      if (wTargetIdx === -1) {
+        console.log(
+          `[withdraw] Waiting for commitment ${commitment.slice(0, 8)}... ` +
+          `to appear on-chain (${wLeaves.length} leaves visible so far)...`
+        );
+        await new Promise(r => setTimeout(r, 4000));
+        continue;
+      }
+
+      // Commitment found — verify root consistency.
+      merklePath = computeMerklePath(wLeaves, wTargetIdx);
+      const onChainRoot = await readPoolRoot();
+      const computedRoot = merklePath.root.toLowerCase().replace(/^0x/, "");
+      const storedRoot   = onChainRoot.toLowerCase().replace(/^0x/, "");
+
+      if (computedRoot !== storedRoot) {
+        console.log(
+          `[withdraw] Commitment found but root mismatch: computed ${computedRoot.slice(0, 8)}... ` +
+          `stored ${storedRoot.slice(0, 8)}... — waiting for all leaves to propagate...`
+        );
+        await new Promise(r => setTimeout(r, 4000));
+        continue;
+      }
+
+      // Root matched once. Confirm it's STABLE by checking 2 more times, 3 s apart.
+      for (let c = 1; c <= 2; c++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const confirmRoot = (await readPoolRoot()).toLowerCase().replace(/^0x/, "");
+        if (confirmRoot !== computedRoot) {
+          console.log(
+            `[withdraw] Root changed during stability check #${c}: ` +
+            `was ${computedRoot.slice(0, 8)}..., now ${confirmRoot.slice(0, 8)}... — reloading...`
+          );
+          await new Promise(r => setTimeout(r, 2000));
+          continue outer;
+        }
+        console.log(`[withdraw] Root stability ${c}/2 ✓ (${computedRoot.slice(0, 8)}...)`);
+      }
+
+      console.log(`[withdraw] Commitment at index ${wTargetIdx}, root stable and confirmed ✓`);
+      break;
     }
 
-    const pubVals = computeNoteValues({
-      owner:        body.ownerField,
-      value:        body.value,
-      assetId,
-      blinding:     body.blinding,
-      secretKey:    body.secretKey,
-      siblings:     merklePath.siblings,
-      index:        String(merklePath.index),
-      recipient:    body.recipient,
-      outValue1:    outputValue1,
-      outBlinding1: outputBlinding1,
-      sender:       body.ownerField,
-      outValue2:    outputValue2,
-      outBlinding2: outputBlinding2,
-    });
+    if (wTargetIdx === -1) {
+      throw new Error(
+        `Note commitment ${commitment.slice(0, 12)}... not found in pool after 180s. ` +
+        `Did the transfer (deposit → transfer) complete on-chain first?`
+      );
+    }
 
-    await assertRootMatchesChain(pubVals.merkleRoot);
-    const newRoot = computeNewRoot(leaves, pubVals.newCommitment1, pubVals.newCommitment2);
+    // ── Phase 2: Generate proof with retry if root drifts while nargo runs ───
+    //
+    // nargo can take 30–60 s. If any new pool transaction lands during that window,
+    // the root stored on-chain diverges from pubVals.merkleRoot → StaleRoot.
+    //
+    // After nargo finishes, re-read the root. If it changed, reload pool state
+    // (so siblings cover the new leaf) and regenerate. Up to 3 attempts total.
 
-    // Off-ramp withdraw: pub_withdraw_amount = outputValue1 (amount revealed to anchor).
-    // Dual-mode circuit constraint: (outputValue1 - outputValue1) * outputValue1 == 0.
-    // Contract's withdraw() reads signal[6] and verifies it equals the `amount` parameter.
-    const inputs = {
+    let pubVals!: ReturnType<typeof computeNoteValues>;
+    let leaves!: string[];
+    let newRoot!: string;
+    const MAX_PROOF_RETRIES = 3;
+
+    for (let attempt = 1; attempt <= MAX_PROOF_RETRIES; attempt++) {
+      leaves = wLeaves;
+
+      pubVals = computeNoteValues({
+        owner:        body.ownerField,
+        value:        body.value,
+        assetId,
+        blinding:     body.blinding,
+        secretKey:    body.secretKey,
+        siblings:     merklePath.siblings,
+        index:        String(merklePath.index),
+        recipient:    body.recipient,
+        outValue1:    outputValue1,
+        outBlinding1: outputBlinding1,
+        sender:       body.ownerField,
+        outValue2:    outputValue2,
+        outBlinding2: outputBlinding2,
+      });
+
+      // Re-read pool root immediately after nargo returns to detect drift.
+      const postProofRoot = (await readPoolRoot()).toLowerCase().replace(/^0x/, "");
+      const proofRoot     = pubVals.merkleRoot.toLowerCase().replace(/^0x/, "");
+
+      if (postProofRoot === proofRoot) {
+        console.log(`[withdraw] Post-proof root check ✓ (attempt ${attempt})`);
+        break;
+      }
+
+      console.log(
+        `[withdraw] Root drifted while nargo ran (attempt ${attempt}/${MAX_PROOF_RETRIES}): ` +
+        `proof has ${proofRoot.slice(0, 8)}..., chain now has ${postProofRoot.slice(0, 8)}...`
+      );
+
+      if (attempt === MAX_PROOF_RETRIES) {
+        throw new Error(
+          `Pool root kept changing during proof generation (${MAX_PROOF_RETRIES} attempts). ` +
+          `Ensure no new deposits/transfers are submitted while Bob withdraws, then retry.`
+        );
+      }
+
+      // Reload pool state so the next attempt's siblings cover the new leaf.
+      console.log(`[withdraw] Reloading pool state for retry ${attempt + 1}...`);
+      await new Promise(r => setTimeout(r, 5000));
+
+      ({ leaves: wLeaves } = await loadAllCommitments());
+      wTargetIdx = wLeaves.findIndex(l => l.toLowerCase().replace(/^0x/, "") === commitment);
+      if (wTargetIdx === -1) {
+        throw new Error(`Commitment disappeared from pool on retry ${attempt + 1}?`);
+      }
+      merklePath = computeMerklePath(wLeaves, wTargetIdx);
+    }
+
+    newRoot = computeNewRoot(leaves, pubVals.newCommitment1, pubVals.newCommitment2);
+
+    // Off-ramp: pub_withdraw_amount = outputValue1 (amount revealed at anchor edge).
+    // Dual-mode constraint: (outputValue1 - outputValue1) * outputValue1 == 0 — satisfied.
+    // Contract's withdraw() checks signal[6] == amount to close the drain vulnerability.
+    const shieldedInputs = {
       merkle_root:         pubVals.merkleRoot,
       nullifier_hash:      pubVals.nullifierHash,
       new_commitment_1:    pubVals.newCommitment1,
       new_commitment_2:    pubVals.newCommitment2,
       fee,
       pub_asset_id:        assetId,
-      pub_withdraw_amount: pubVals.outputValue1,   // slot 6: = output_value_1, amount revealed
+      pub_withdraw_amount: pubVals.outputValue1,
       owner_pubkey:        body.ownerField,
       value:               body.value,
       asset_id:            assetId,
@@ -692,17 +871,45 @@ app.post("/api/prove/withdraw", async (req, res) => {
       output_blinding_2:   outputBlinding2,
     };
 
-    const result = generateProof("shielded_transfer", inputs);
+    const shieldedResult = generateProof("shielded_transfer", shieldedInputs);
+
+    // ── Step 2: Compliance proof for the off-ramp edge (PRD §6.2) ─────────────
+    //
+    // Bob must prove he is KYC'd for the receiving jurisdiction and not
+    // sanctioned, and that the withdrawal amount is within corridor limits.
+    //
+    // Pre-compute the compliance_nullifier via compliance_nf_util, then pass it
+    // as a public input.  Using body.ownerField (Bob's pubkey) as depositor_pubkey
+    // ensures Bob's off-ramp nullifier is distinct from Alice's deposit nullifier.
+    const withdrawComplianceNullifier = computeComplianceNullifier(
+      DEMO_KYC_BASE.secret_salt,
+      body.ownerField,
+      outputValue1,
+      DEMO_KYC_BASE.corridor_id,
+    );
+    const complianceInputs = {
+      ...DEMO_KYC_BASE,
+      amount:               outputValue1,
+      depositor_pubkey:     body.ownerField,
+      compliance_nullifier: withdrawComplianceNullifier,
+    };
+    const complianceResult = generateProof("compliance", complianceInputs);
 
     res.json({
-      proof:          result.proof,
-      pubSignals:     result.pubSignals,
-      publicSignals:  result.publicSignals,
-      spendNullifier: result.publicSignals[1] ?? "0",
-      newCommitment1: result.publicSignals[2] ?? "0",
-      newCommitment2: result.publicSignals[3] ?? "0",
-      merkleRoot:     result.publicSignals[0] ?? "0",
+      // Shielded spend proof
+      proof:          shieldedResult.proof,
+      pubSignals:     shieldedResult.pubSignals,
+      publicSignals:  shieldedResult.publicSignals,
+      spendNullifier: shieldedResult.publicSignals[1] ?? "0",
+      newCommitment1: shieldedResult.publicSignals[2] ?? "0",
+      newCommitment2: shieldedResult.publicSignals[3] ?? "0",
+      merkleRoot:     shieldedResult.publicSignals[0] ?? "0",
       newRoot,
+      // Compliance proof for off-ramp KYC gate
+      complianceProof:          complianceResult.proof,
+      compliancePubSignals:     complianceResult.pubSignals,
+      compliancePublicSignals:  complianceResult.publicSignals,
+      complianceNullifier:      complianceResult.publicSignals[5] ?? "0",
     });
   } catch (err: unknown) {
     res.status(500).json({ error: String(err) });

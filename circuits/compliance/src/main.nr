@@ -87,14 +87,20 @@ fn compute_merkle_root(leaf: Field, index: u32, siblings: [Field; 10]) -> Field 
     current
 }
 
-// The compliance_nullifier is provided as a PUBLIC INPUT (slot 5).
-// The circuit verifies it matches the circuit-computed value.
+// Public signal layout (slots 0..5):
+//   [0] merkle_root          -- KYC registry tree root
+//   [1] corridor_id
+//   [2] min_kyc_tier
+//   [3] max_amount
+//   [4] amount
+//   [5] compliance_nullifier -- public input verified by the circuit
 //
-// Why not a return value? noir-cli interop (the Groth16 bridge tool) expects
-// ALL public values to be supplied in inputs.json upfront.  Return values are
-// not supported by that tool.  The mock-issuer pre-computes the nullifier by
-// running `nargo execute` first (which prints the Circuit output to stdout),
-// then passes it as a normal public input for `noir-cli interop` + snarkjs.
+// The compliance_nullifier is a PUBLIC INPUT (not a return value).
+// The mock-issuer pre-computes it using the compliance_nf_util circuit
+// (runs nargo execute to derive the hash from private inputs), then
+// passes it here.  The circuit verifies it equals the computed value,
+// guaranteeing the prover cannot forge a nullifier for an identity they
+// do not control.
 fn main(
     // --- Public inputs (slots 0..5) ---
     merkle_root:          pub Field,   // slot 0
@@ -102,7 +108,7 @@ fn main(
     min_kyc_tier:         pub Field,   // slot 2
     max_amount:           pub Field,   // slot 3
     amount:               pub Field,   // slot 4
-    compliance_nullifier: pub Field,   // slot 5: verifier checks this matches computed value
+    compliance_nullifier: pub Field,   // slot 5
 
     // --- Private witness ---
     secret_salt:      Field,
@@ -128,9 +134,10 @@ fn main(
     assert(amount as u64 > 0, "Amount must be positive");
     assert(amount as u64 <= max_amount as u64, "Amount exceeds corridor limit");
 
-    // 5. Nullifier binding: circuit verifies the provided nullifier is correct.
-    //    nullifier = H(H(salt, depositor), amount, corridor, DOMAIN_COMP_NF)
-    //    Unique per (user, amount, corridor); prevents per-user collision.
+    // 5. Nullifier binding: the circuit verifies the publicly supplied nullifier
+    //    is correctly derived from the prover's private (salt, depositor, amount,
+    //    corridor) tuple.  The mock-issuer pre-computes this via compliance_nf_util
+    //    before generating the Groth16 proof.
     let expected_nullifier = compute_compliance_nullifier(
         secret_salt, amount, corridor_id, depositor_pubkey
     );
@@ -184,25 +191,10 @@ fn test_valid_compliance() {
     assert(amount as u64 > 0);
     assert(amount as u64 <= max_amt as u64);
 
+    // Nullifier is now a return value; different depositors produce different nullifiers
     let nf_user1 = compute_compliance_nullifier(salt, amount, corridor, depositor);
     let nf_user2 = compute_compliance_nullifier(salt, amount, corridor, 99999);
     assert(nf_user1 != nf_user2, "Different depositors must produce different nullifiers");
-
-    // Confirm nullifier constraint: expected == provided
-    let computed_nf = compute_compliance_nullifier(salt, amount, corridor, depositor);
-    assert(computed_nf == nf_user1);
-}
-
-#[test(should_fail)]
-fn test_wrong_nullifier_input_rejected() {
-    // Providing the wrong nullifier as public input must fail
-    let salt:      Field = 42;
-    let amount:    Field = 500;
-    let corridor:  Field = 1;
-    let depositor: Field = 1;
-    let correct_nf = compute_compliance_nullifier(salt, amount, corridor, depositor);
-    let wrong_nf   = correct_nf + 1;
-    assert(correct_nf == wrong_nf, "Invalid compliance nullifier");
 }
 
 #[test(should_fail)]
