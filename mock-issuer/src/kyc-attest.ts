@@ -29,11 +29,14 @@ import { createRequire } from "node:module";
 
 import {
   Address,
+  Contract,
   Keypair,
   Networks,
   TransactionBuilder,
   hash as sha256,
   nativeToScVal,
+  rpc,
+  scValToNative,
 } from "@stellar/stellar-sdk";
 import { bls12_381 } from "@noble/curves/bls12-381.js";
 import sha3 from "js-sha3";
@@ -60,8 +63,15 @@ const FRIENDBOT  = "https://friendbot.stellar.org";
 
 // Must byte-match contracts/external delegation.rs ATTEST_DOMAIN_SEPARATOR.
 const ATTEST_DOMAIN_SEPARATOR = Buffer.from("ATTEST_PROTOCOL_V1_DELEGATED", "utf8");
+// Must byte-match delegation.rs REVOKE_DOMAIN_SEPARATOR.
+const REVOKE_DOMAIN_SEPARATOR = Buffer.from("REVOKE_PROTOCOL_V1_DELEGATED", "utf8");
 // Versioned UID prefix — must match utils.rs generate_attestation_uid.
 const ATTEST_UID_PREFIX = Buffer.from("ATTEST_UID_V1", "utf8");
+
+// Optional sanctions denylist (one G-address per array entry). The KYC check
+// below rejects any subject on this list. Real screening would call an external
+// provider; this file is the local seam used for the honest demo.
+const DENYLIST_FILE = path.join(__dirname, "..", ".kyc-denylist.json");
 
 const BLS_KEY_FILE       = path.join(__dirname, "..", ".kyc-bls-key.json");
 const SUBMITTER_KEY_FILE = path.join(__dirname, "..", ".kyc-submitter-key.json");
@@ -89,6 +99,56 @@ export function loadAttestConfig(): AttestConfig | null {
     schemaUid: Buffer.from(String(at.kyc_schema_uid).replace(/^0x/, ""), "hex"),
     schemaDef: at.kyc_schema_def ?? "",
   };
+}
+
+// ---------------------------------------------------------------------------
+// KYC claim value — single source of truth
+//
+// The attestation `value` is the actual KYC claim. The ShieldedPool now enforces
+// this byte-for-byte on-chain (per corridor edge), so the issuer and the pool
+// MUST agree on the exact string. Key order here defines the canonical encoding.
+// ---------------------------------------------------------------------------
+
+export function kycClaimValue(tier: number, country: number): string {
+  return JSON.stringify({ verified: true, tier, country });
+}
+
+// ---------------------------------------------------------------------------
+// Trust boundary (KYC verification seam)
+//
+// This is the ONLY place where "did this wallet pass KYC?" is decided. Today it
+// performs a real sanctions-denylist screen and basic input validation; a
+// production deployment would replace the body with a call to a regulated KYC
+// provider (Sumsub / Onfido / a SEP-12 anchor) and only proceed on approval.
+// The pool trusts the *credential*, not this process — swapping this seam for a
+// real provider is a code-local change that does not touch the contract.
+// ---------------------------------------------------------------------------
+
+function loadDenylist(): Set<string> {
+  if (!fs.existsSync(DENYLIST_FILE)) return new Set();
+  try {
+    const arr = JSON.parse(fs.readFileSync(DENYLIST_FILE, "utf8")) as string[];
+    return new Set(arr.map((s) => s.trim()));
+  } catch {
+    return new Set();
+  }
+}
+
+export interface KycCheckResult { approved: boolean; reason?: string }
+
+export function runKycCheck(subject: string, opts: { tier: number; country: number }): KycCheckResult {
+  if (!subject.startsWith("G") || subject.length !== 56) {
+    return { approved: false, reason: "invalid Stellar address" };
+  }
+  if (loadDenylist().has(subject)) {
+    return { approved: false, reason: "subject is on the sanctions denylist" };
+  }
+  if (opts.tier < 1) {
+    return { approved: false, reason: "tier below minimum" };
+  }
+  // NOTE: real identity verification (document + liveness + sanctions API) plugs
+  // in here. The demo authority approves any non-denylisted, well-formed wallet.
+  return { approved: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +272,59 @@ export function computeAttestationUid(p: {
   return Buffer.from(keccak_256(preimage), "hex");
 }
 
+/**
+ * Build the 32-byte revocation message hash, matching delegation.rs
+ * create_revocation_message:
+ *   DST || sha256(contract_xdr) || network_id || schema_uid || attestation_uid ||
+ *   sha256(subject_xdr) || nonce_be || deadline_be
+ * then sha256 of the whole thing. NOTE: schema_uid and attestation_uid are the
+ * RAW 32 bytes (to_array()), not XDR-encoded.
+ */
+export function buildRevokeMessageHash(p: {
+  contractId: string;
+  schemaUid: Buffer;       // raw 32
+  attestationUid: Buffer;  // raw 32
+  subject: string;
+  nonce: bigint;
+  deadline: bigint;
+}): Buffer {
+  const networkId = sha256(Buffer.from(NETWORK_PASSPHRASE, "utf8"));
+  const parts: Buffer[] = [
+    REVOKE_DOMAIN_SEPARATOR,
+    sha256(addrXdr(p.contractId)),
+    networkId,
+    p.schemaUid,
+    p.attestationUid,
+    sha256(addrXdr(p.subject)),
+    u64be(p.nonce),
+    u64be(p.deadline),
+  ];
+  return sha256(Buffer.concat(parts));
+}
+
+/** Read the next per-revoker nonce from the deployed contract (independent of
+ * the attester nonce — see contract HAL-03 / C-CONTRACT-1). The bundled SDK's
+ * proto client predates get_revoker_nonce, so we simulate the call directly. */
+async function getRevokerNonce(revoker: string): Promise<bigint> {
+  const cfg = loadAttestConfig();
+  if (!cfg) throw new Error("AttestProtocol not configured");
+  const submitter = loadSubmitterKeypair();
+  const server = new rpc.Server(RPC_URL);
+  const source = await server.getAccount(submitter.publicKey());
+  const contract = new Contract(cfg.protocol);
+  const tx = new TransactionBuilder(source, { fee: "100000", networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(contract.call("get_revoker_nonce", new Address(revoker).toScVal()))
+    .setTimeout(30)
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(sim)) {
+    throw new Error(`get_revoker_nonce simulation failed: ${sim.error}`);
+  }
+  const retval = sim.result?.retval;
+  if (!retval) return 0n;
+  return BigInt(scValToNative(retval) as number | bigint);
+}
+
 /** Sign the message hash → 96-byte uncompressed G1 signature (contract format).
  *
  * Both hash and sign use the SAME bls12_381 instance so the curve Point class
@@ -237,6 +350,9 @@ interface AttestRecord {
   tier: number;
   country: number;
   issuedAt: number;
+  revoked?: boolean;
+  revokedAt?: number;
+  revokeTxHash?: string;
 }
 
 function loadDb(): Record<string, AttestRecord> {
@@ -294,6 +410,10 @@ export async function enrollKyc(subject: string, opts: { tier: number; country: 
   const cfg = loadAttestConfig();
   if (!cfg) throw new Error("AttestProtocol not configured");
 
+  // Trust boundary: the authority only attests after KYC verification passes.
+  const check = runKycCheck(subject, opts);
+  if (!check.approved) throw new Error(`KYC check rejected: ${check.reason}`);
+
   const bls       = loadBlsKeypair();
   const submitter = loadSubmitterKeypair();
   await ensureSubmitterFunded();
@@ -305,7 +425,7 @@ export async function enrollKyc(subject: string, opts: { tier: number; country: 
   const nowSec     = Math.floor(Date.now() / 1000);
   const deadline   = BigInt(nowSec + 600);                                   // sig submission window
   const expiresSec = BigInt(nowSec + (opts.expiresDays ?? 365) * 86400);     // attestation validity
-  const value      = JSON.stringify({ verified: true, tier: opts.tier, country: opts.country });
+  const value      = kycClaimValue(opts.tier, opts.country);
 
   const messageHash = buildAttestMessageHash({
     contractId: cfg.protocol,
@@ -357,6 +477,67 @@ export async function enrollKyc(subject: string, opts: { tier: number; country: 
     tier: opts.tier,
     country: opts.country,
   };
+}
+
+export interface RevokeResult {
+  attestationUid: string;
+  txHash?: string;
+  subject: string;
+  revoker: string;
+}
+
+/**
+ * Revoke a wallet's KYC attestation via delegated revocation, signed by the
+ * authority's BLS key and submitted (gas paid) by the submitter account. After
+ * this, the ShieldedPool's get_attestation read sees `revoked = true` and the
+ * gate fails with KycAttestationRevoked.
+ */
+export async function revokeKyc(subject: string): Promise<RevokeResult> {
+  const cfg = loadAttestConfig();
+  if (!cfg) throw new Error("AttestProtocol not configured");
+
+  const db  = loadDb();
+  const rec = db[subject];
+  if (!rec) throw new Error(`no attestation on file for ${subject} (enroll first)`);
+
+  const bls       = loadBlsKeypair();
+  const submitter = loadSubmitterKeypair();
+  await ensureSubmitterFunded();
+
+  const client         = makeClient(submitter.publicKey());
+  const attestationUid = Buffer.from(rec.uid, "hex");
+  const nonce          = await getRevokerNonce(cfg.authority);
+  const nowSec         = Math.floor(Date.now() / 1000);
+  const deadline       = BigInt(nowSec + 600);
+
+  const messageHash = buildRevokeMessageHash({
+    contractId:     cfg.protocol,
+    schemaUid:      cfg.schemaUid,
+    attestationUid,
+    subject,
+    nonce,
+    deadline,
+  });
+  const signature = signAttestationMessage(messageHash, bls.privateKey);
+
+  const request = {
+    attestation_uid: attestationUid,
+    schema_uid:      cfg.schemaUid,
+    subject,
+    revoker:         cfg.authority,
+    nonce,
+    deadline,
+    signature,
+    type:            "revoke" as const,
+  };
+
+  const result = await client.revokeByDelegation(request as any, { signer: submitterSigner(submitter) });
+  const txHash = result?.hash ?? result?.txHash ?? undefined;
+
+  db[subject] = { ...rec, revoked: true, revokedAt: nowSec, revokeTxHash: txHash };
+  saveDb(db);
+
+  return { attestationUid: rec.uid, txHash, subject, revoker: cfg.authority };
 }
 
 export interface KycStatus {

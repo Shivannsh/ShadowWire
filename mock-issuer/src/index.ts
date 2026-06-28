@@ -36,6 +36,8 @@ import {
   getBlsPublicKeyHex,
   getKycStatus,
   enrollKyc,
+  revokeKyc,
+  kycClaimValue,
 } from "./kyc-attest.js";
 import { getCorridor } from "./corridors.js";
 import { resolveKycMode, readRegistryRoot, type KycMode } from "./registry-state.js";
@@ -1063,14 +1065,21 @@ app.get("/api/kyc/config", (_req, res) => {
     res.json({ configured: false });
     return;
   }
+  // Per-edge expected attestation value. The pool (v11+) enforces these
+  // byte-for-byte on-chain, so they are the single source of truth shared by
+  // the deploy script (constructor args) and any client.
+  const send = sideKycAttributes("send");
+  const recv = sideKycAttributes("receive");
   res.json({
-    configured:   true,
-    provider:     "AttestProtocol",
-    protocol:     cfg.protocol,
-    authority:    cfg.authority,
-    schemaUid:    cfg.schemaUid.toString("hex"),
-    schemaDef:    cfg.schemaDef,
-    blsPublicKey: getBlsPublicKeyHex(),
+    configured:           true,
+    provider:             "AttestProtocol",
+    protocol:             cfg.protocol,
+    authority:            cfg.authority,
+    schemaUid:            cfg.schemaUid.toString("hex"),
+    schemaDef:            cfg.schemaDef,
+    blsPublicKey:         getBlsPublicKeyHex(),
+    expectedValueSend:    kycClaimValue(send.tier, send.country),
+    expectedValueReceive: kycClaimValue(recv.tier, recv.country),
   });
 });
 
@@ -1108,6 +1117,27 @@ app.post("/api/kyc/enroll", async (req, res) => {
   }
 });
 
+// Revoke a wallet's KYC attestation (authority action). After this propagates,
+// the pool's on-chain gate rejects the wallet with KycAttestationRevoked.
+app.post("/api/kyc/revoke", async (req, res) => {
+  try {
+    const address = String(req.body?.address ?? "").trim();
+    if (!address.startsWith("G") || address.length !== 56) {
+      res.status(400).json({ error: "valid `address` (G...) required" });
+      return;
+    }
+    if (!loadAttestConfig()) {
+      res.status(503).json({ error: "AttestProtocol not configured — run scripts/deploy-attest-protocol.mjs" });
+      return;
+    }
+    const result = await revokeKyc(address);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    console.error("KYC revoke failed:", err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
 async function main() {
   try {
     kycMode = await resolveKycMode(
@@ -1135,6 +1165,7 @@ async function main() {
     if (attestCfg) {
       console.log(`AttestProtocol KYC: ${attestCfg.protocol} (authority ${attestCfg.authority.slice(0, 8)}…)`);
       console.log(`POST /api/kyc/enroll        { address, side }`);
+      console.log(`POST /api/kyc/revoke        { address }`);
       console.log(`GET  /api/kyc/status        ?address=G…`);
       console.log(`GET  /api/kyc/config`);
     } else {

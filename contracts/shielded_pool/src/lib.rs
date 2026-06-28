@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, symbol_short, token,
-    Address, Bytes, BytesN, Env, Symbol,
+    Address, Bytes, BytesN, Env, String, Symbol,
 };
 
 // ---------------------------------------------------------------------------
@@ -61,6 +61,12 @@ pub enum PoolError {
     KycAttestationRevoked   = 12,
     /// The attestation's expiration_time has passed.
     KycAttestationExpired   = 13,
+    /// The attestation's value (the KYC claim: verified/tier/country) does not
+    /// match the policy required for this corridor edge. Closes the gap where the
+    /// pool read an attestation but ignored its actual claim payload — now the
+    /// depositor's attestation must encode the sending jurisdiction/tier and the
+    /// recipient's must encode the receiving jurisdiction/tier.
+    KycAttestationValueMismatch = 14,
 }
 
 #[contracttype]
@@ -76,6 +82,10 @@ pub enum DataKey {
     KycAuthority,
     // The KYC schema UID attestations must follow
     KycSchema,
+    // Required attestation value (KYC claim string) for the sending edge (deposit)
+    KycValueSend,
+    // Required attestation value (KYC claim string) for the receiving edge (withdraw)
+    KycValueReceive,
     // Note-commitment tree: each slot stores one BytesN<32>
     Commitment(u32),
     // Spend nullifier set (shielded transfer/withdraw anti-double-spend)
@@ -160,6 +170,8 @@ impl ShieldedPool {
         attest_protocol:      Address,
         kyc_authority:        Address,
         kyc_schema:           BytesN<32>,
+        kyc_value_send:       String,
+        kyc_value_receive:    String,
     ) {
         env.storage().instance().set(&DataKey::Admin,               &admin);
         env.storage().instance().set(&ASSET_KEY,                    &asset);
@@ -172,6 +184,8 @@ impl ShieldedPool {
         env.storage().instance().set(&DataKey::AttestProtocol,      &attest_protocol);
         env.storage().instance().set(&DataKey::KycAuthority,        &kyc_authority);
         env.storage().instance().set(&DataKey::KycSchema,           &kyc_schema);
+        env.storage().instance().set(&DataKey::KycValueSend,        &kyc_value_send);
+        env.storage().instance().set(&DataKey::KycValueReceive,     &kyc_value_receive);
         env.storage().instance().set(&NEXT_IDX,                     &0u32);
         env.storage().instance().extend_ttl(TTL_MIN, TTL_EXTEND);
     }
@@ -203,6 +217,16 @@ impl ShieldedPool {
     /// The trusted KYC authority address (attester of valid KYC attestations).
     pub fn kyc_authority(env: Env) -> Address {
         env.storage().instance().get(&DataKey::KycAuthority).unwrap()
+    }
+
+    /// Required attestation value (KYC claim) for the sending edge (deposit).
+    pub fn kyc_value_send(env: Env) -> String {
+        env.storage().instance().get(&DataKey::KycValueSend).unwrap()
+    }
+
+    /// Required attestation value (KYC claim) for the receiving edge (withdraw).
+    pub fn kyc_value_receive(env: Env) -> String {
+        env.storage().instance().get(&DataKey::KycValueReceive).unwrap()
     }
 
     /// The KYC schema UID that valid attestations must follow.
@@ -397,11 +421,15 @@ impl ShieldedPool {
     ///
     /// Because `subject` is bound to the authenticated caller, a user cannot pass
     /// off someone else's attestation; because `attester`/`schema` are pinned, a
-    /// self-issued or unrelated attestation is rejected.
+    /// self-issued or unrelated attestation is rejected. The `expected_value`
+    /// pins the actual KYC claim (verified/tier/country) required for this corridor
+    /// edge, so the pool enforces the attestation's *content*, not just its
+    /// existence.
     fn verify_kyc_attestation(
         env:             &Env,
         subject:         &Address,
         attestation_uid: &BytesN<32>,
+        expected_value:  &String,
     ) -> Result<(), PoolError> {
         let protocol_addr: Address =
             env.storage().instance().get(&DataKey::AttestProtocol).unwrap();
@@ -428,6 +456,10 @@ impl ShieldedPool {
             if exp <= env.ledger().timestamp() {
                 return Err(PoolError::KycAttestationExpired);
             }
+        }
+        // Enforce the KYC claim itself (jurisdiction + tier for this edge).
+        if att.value != *expected_value {
+            return Err(PoolError::KycAttestationValueMismatch);
         }
         Ok(())
     }
@@ -498,8 +530,10 @@ impl ShieldedPool {
 
         // Tier C: on-chain KYC gate. The depositor must hold a valid, non-revoked,
         // unexpired AttestProtocol attestation issued by the trusted authority,
-        // with the depositor as subject.
-        Self::verify_kyc_attestation(&env, &depositor, &kyc_attestation_uid)?;
+        // with the depositor as subject, whose claim matches the sending edge.
+        let expected_send: String =
+            env.storage().instance().get(&DataKey::KycValueSend).unwrap();
+        Self::verify_kyc_attestation(&env, &depositor, &kyc_attestation_uid, &expected_send)?;
 
         // The new tree root must be attested by the operator (anti-forged-root).
         Self::assert_root_signed(&env, &new_root, &root_signature);
@@ -637,8 +671,11 @@ impl ShieldedPool {
 
         // Tier C: on-chain KYC gate at the off-ramp edge. The recipient must hold a
         // valid, non-revoked, unexpired AttestProtocol attestation issued by the
-        // trusted authority, with the recipient as subject (PRD §6.2).
-        Self::verify_kyc_attestation(&env, &recipient, &kyc_attestation_uid)?;
+        // trusted authority, with the recipient as subject (PRD §6.2), whose claim
+        // matches the receiving edge.
+        let expected_receive: String =
+            env.storage().instance().get(&DataKey::KycValueReceive).unwrap();
+        Self::verify_kyc_attestation(&env, &recipient, &kyc_attestation_uid, &expected_receive)?;
 
         // The new tree root must be attested by the operator (anti-forged-root).
         Self::assert_root_signed(&env, &new_root, &root_signature);
@@ -760,6 +797,11 @@ mod test {
         }
     }
 
+    // The exact KYC claim the sending edge requires. The pool compares the
+    // attestation's `value` against this; anything else is rejected.
+    const KYC_SEND_VALUE: &str = "{\"verified\":true,\"tier\":2,\"country\":840}";
+    const KYC_RECV_VALUE: &str = "{\"verified\":true,\"tier\":2,\"country\":566}";
+
     struct Fixture {
         env:       Env,
         pool:      Address,
@@ -768,6 +810,7 @@ mod test {
         schema:    BytesN<32>,
         subject:   Address,
         uid:       BytesN<32>,
+        expected:  SorobanString,
     }
 
     fn setup() -> Fixture {
@@ -789,6 +832,8 @@ mod test {
         let registry = Address::generate(&env);
         let zero_root = BytesN::from_array(&env, &[0u8; 32]);
         let op_key = BytesN::from_array(&env, &[0u8; 32]);
+        let value_send = SorobanString::from_str(&env, KYC_SEND_VALUE);
+        let value_recv = SorobanString::from_str(&env, KYC_RECV_VALUE);
         let pool = env.register(
             ShieldedPool,
             (
@@ -803,10 +848,12 @@ mod test {
                 attest.clone(),
                 authority.clone(),
                 schema.clone(),
+                value_send.clone(),
+                value_recv,
             ),
         );
 
-        Fixture { env, pool, attest, authority, schema, subject, uid }
+        Fixture { env, pool, attest, authority, schema, subject, uid, expected: value_send }
     }
 
     fn make_att(
@@ -817,12 +864,24 @@ mod test {
         revoked: bool,
         expiration_time: Option<u64>,
     ) -> Attestation {
+        make_att_value(f, attester, schema, subject, revoked, expiration_time, KYC_SEND_VALUE)
+    }
+
+    fn make_att_value(
+        f: &Fixture,
+        attester: &Address,
+        schema: &BytesN<32>,
+        subject: &Address,
+        revoked: bool,
+        expiration_time: Option<u64>,
+        value: &str,
+    ) -> Attestation {
         Attestation {
             uid:             f.uid.clone(),
             schema_uid:      schema.clone(),
             subject:         subject.clone(),
             attester:        attester.clone(),
-            value:           SorobanString::from_str(&f.env, "{\"verified\":true}"),
+            value:           SorobanString::from_str(&f.env, value),
             nonce:           0,
             timestamp:       0,
             expiration_time,
@@ -839,7 +898,7 @@ mod test {
     fn run(f: &Fixture) -> Result<(), PoolError> {
         f.env
             .as_contract(&f.pool, || {
-                ShieldedPool::verify_kyc_attestation(&f.env, &f.subject, &f.uid)
+                ShieldedPool::verify_kyc_attestation(&f.env, &f.subject, &f.uid, &f.expected)
             })
     }
 
@@ -909,5 +968,17 @@ mod test {
         let att = make_att(&f, &f.authority, &f.schema, &f.subject, false, Some(4_999));
         store(&f, &att);
         assert_eq!(run(&f), Err(PoolError::KycAttestationExpired));
+    }
+
+    #[test]
+    fn wrong_value_rejected() {
+        let f = setup();
+        // Attestation is valid in every respect except the claim: it encodes the
+        // receiving jurisdiction (566) while the sending edge requires 840.
+        let att = make_att_value(
+            &f, &f.authority, &f.schema, &f.subject, false, None, KYC_RECV_VALUE,
+        );
+        store(&f, &att);
+        assert_eq!(run(&f), Err(PoolError::KycAttestationValueMismatch));
     }
 }
