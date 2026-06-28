@@ -41,6 +41,8 @@ export interface ShieldedProofBundle {
   newCommitment2: Uint8Array;
   merkleRoot:     Uint8Array;
   newRoot:        Uint8Array;
+  /** Operator ed25519 signature over newRoot (present when the issuer signs roots). */
+  rootSignature?: Uint8Array;
 }
 
 /**
@@ -111,6 +113,14 @@ function hexToBytes32(hex: string): Uint8Array {
   let clean = String(hex).trim();
   while (clean.startsWith("0x") || clean.startsWith("0X")) clean = clean.slice(2);
   return new Uint8Array(Buffer.from(clean.padStart(64, "0"), "hex"));
+}
+
+/** Decode an arbitrary-length hex string (e.g. a 64-byte ed25519 signature). */
+function hexToBytes(hex: string): Uint8Array {
+  let clean = String(hex).trim();
+  while (clean.startsWith("0x") || clean.startsWith("0X")) clean = clean.slice(2);
+  if (clean.length % 2 !== 0) clean = "0" + clean;
+  return new Uint8Array(Buffer.from(clean, "hex"));
 }
 
 function fieldToBytes32(field: string): Uint8Array {
@@ -186,13 +196,14 @@ export async function generateComplianceProof(
 // ---------------------------------------------------------------------------
 
 interface DepositNoteResponse {
-  commitment: string;
-  newRoot:    string;
+  commitment:     string;
+  newRoot:        string;
+  rootSignature?: string;
 }
 
 export async function proveDeposit(
   input: DepositNoteInput
-): Promise<{ commitment: Uint8Array; newRoot: Uint8Array }> {
+): Promise<{ commitment: Uint8Array; newRoot: Uint8Array; rootSignature?: Uint8Array }> {
   const data = await post<DepositNoteResponse>("/api/prove/deposit", {
     ownerField: input.ownerField,
     value:      input.value,
@@ -202,8 +213,9 @@ export async function proveDeposit(
   });
 
   return {
-    commitment: hexToBytes32(data.commitment),
-    newRoot:    hexToBytes32(data.newRoot),
+    commitment:    hexToBytes32(data.commitment),
+    newRoot:       hexToBytes32(data.newRoot),
+    rootSignature: data.rootSignature ? hexToBytes(data.rootSignature) : undefined,
   };
 }
 
@@ -220,6 +232,7 @@ interface TransferProveResponse {
   newCommitment2: string;
   merkleRoot:     string;
   newRoot:        string;
+  rootSignature?: string;
   bobNote:        NoteReceipt;
 }
 
@@ -245,6 +258,7 @@ export async function generateShieldedTransferProof(
     newCommitment2: fieldToBytes32(data.newCommitment2),
     merkleRoot:     fieldToBytes32(data.merkleRoot),
     newRoot:        hexToBytes32(data.newRoot),
+    rootSignature:  data.rootSignature ? hexToBytes(data.rootSignature) : undefined,
     bobNote:        data.bobNote,
   };
 }
@@ -263,6 +277,7 @@ interface WithdrawProveResponse {
   newCommitment2: string;
   merkleRoot:     string;
   newRoot:        string;
+  rootSignature?: string;
   // Compliance proof for the off-ramp edge (PRD §6.2)
   complianceProof:         number[];
   compliancePubSignals:    number[];
@@ -292,6 +307,7 @@ export async function generateWithdrawProof(
     newCommitment2: fieldToBytes32(data.newCommitment2),
     merkleRoot:     fieldToBytes32(data.merkleRoot),
     newRoot:        hexToBytes32(data.newRoot),
+    rootSignature:  data.rootSignature ? hexToBytes(data.rootSignature) : undefined,
     // Compliance proof for off-ramp KYC gate
     complianceProof:      bytesFromArray(data.complianceProof),
     compliancePubSignals: bytesFromArray(data.compliancePubSignals),
@@ -302,6 +318,20 @@ export async function generateWithdrawProof(
 // ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------
+
+export interface CorridorInfo {
+  id:         number;
+  sending:    { country: string; countryCode: string };
+  receiving:  { country: string; countryCode: string };
+  minKycTier: number;
+  maxAmount:  string;
+  /** "registry" = per-user cross-border KYC active; "demo" = legacy single leaf. */
+  kycMode:    string;
+}
+
+export async function loadCorridor(): Promise<CorridorInfo> {
+  return get<CorridorInfo>("/api/corridor");
+}
 
 export async function loadAttestationMetadata(): Promise<{
   corridorId: number; minKycTier: number; maxAmount: bigint;
@@ -317,19 +347,36 @@ export async function loadAttestationMetadata(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
-// Encode / decode note receipts (off-chain Alice -> Bob channel)
+// Encode / decode note receipts (off-chain Buyer -> Seller channel)
+//
+// Notes carry spend authority (the note secretKey), so the receipt is a bearer
+// instrument. The preferred channel is `sealNoteReceipt`, which encrypts the note
+// to the Seller's receiving key (see lib/noteCrypto). `decodeNoteReceipt` accepts
+// both the sealed format and the legacy plaintext base64 for backward compat.
 // ---------------------------------------------------------------------------
 
+import { isSealedNote, openSealedNote, sealNoteToRecipient } from "./noteCrypto";
+
+/** Legacy plaintext encoding — kept only for backward compatibility. */
 export function encodeNoteReceipt(note: NoteReceipt): string {
   return btoa(JSON.stringify(note));
 }
 
+/** Preferred: encrypt+authenticate the note to the Seller's receiving key. */
+export function sealNoteReceipt(note: NoteReceipt, recipientReceivingKey: string): string {
+  return sealNoteToRecipient(note, recipientReceivingKey);
+}
+
 export function decodeNoteReceipt(encoded: string): NoteReceipt {
+  const trimmed = encoded.trim();
+  if (isSealedNote(trimmed)) {
+    return openSealedNote(trimmed);
+  }
   try {
-    return JSON.parse(atob(encoded)) as NoteReceipt;
+    return JSON.parse(atob(trimmed)) as NoteReceipt;
   } catch {
     throw new Error(
-      "Invalid note receipt -- paste the full base64 string Alice provided"
+      "Invalid note receipt — paste the sealed package (SWNOTE1.…) the Buyer sent you"
     );
   }
 }

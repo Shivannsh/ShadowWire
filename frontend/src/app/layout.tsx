@@ -27,7 +27,7 @@ const mono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "ShadowWire — Private Cross-Border Settlement",
   description:
-    "Shielded remittance on Stellar. Fiat on-ramp, a private corridor, and compliance proofs at every edge — amounts never touch the public ledger.",
+    "Shielded remittance on Stellar. Fiat on-ramp, a private corridor, and compliance proofs at every edge — transfer amounts stay off the public ledger, surfacing only at the regulated fiat edges.",
 };
 
 export default function RootLayout({

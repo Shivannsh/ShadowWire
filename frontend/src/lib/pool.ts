@@ -14,8 +14,35 @@ function bytesN32ScVal(bytes: Uint8Array): StellarSdk.xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvBytes(Buffer.from(bytes));
 }
 
+function bytesN64ScVal(bytes: Uint8Array): StellarSdk.xdr.ScVal {
+  if (bytes.length !== 64) {
+    throw new Error(`Expected 64-byte signature, got ${bytes.length}`);
+  }
+  return StellarSdk.xdr.ScVal.scvBytes(Buffer.from(bytes));
+}
+
 function bytesScVal(bytes: Uint8Array): StellarSdk.xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvBytes(Buffer.from(bytes));
+}
+
+/**
+ * Whether the deployed pool expects an operator-signed root (v9+). When enabled,
+ * each state-changing call carries a 64-byte ed25519 signature over the new root
+ * right after the `new_root` argument. Defaults off so the original v8 pool (no
+ * signature parameter) keeps working without changes.
+ */
+const POOL_SIGNED_ROOT =
+  process.env.NEXT_PUBLIC_POOL_SIGNED_ROOT === "true";
+
+function rootSigArgs(signature?: Uint8Array): StellarSdk.xdr.ScVal[] {
+  if (!POOL_SIGNED_ROOT) return [];
+  if (!signature) {
+    throw new Error(
+      "NEXT_PUBLIC_POOL_SIGNED_ROOT is enabled but no root signature was provided " +
+        "by the proving server. Update the mock-issuer to return rootSignature."
+    );
+  }
+  return [bytesN64ScVal(signature)];
 }
 
 function i128ScVal(value: bigint): StellarSdk.xdr.ScVal {
@@ -53,6 +80,8 @@ export interface DepositParams {
   /** Anti-replay compliance nullifier (stored on-chain after use) */
   complianceNullifier: Uint8Array;
   complianceProof: ComplianceProofBundle;
+  /** Operator ed25519 signature over the new root (required when POOL_SIGNED_ROOT). */
+  rootSignature?: Uint8Array;
 }
 
 /**
@@ -74,6 +103,7 @@ export async function buildDepositTx(params: DepositParams): Promise<string> {
     i128ScVal(amount),
     bytesN32ScVal(params.commitment),
     bytesN32ScVal(params.newRoot),
+    ...rootSigArgs(params.rootSignature),
     bytesN32ScVal(params.complianceNullifier),
     bytesScVal(params.complianceProof.proof),
     bytesScVal(params.complianceProof.pubSignals),
@@ -89,6 +119,8 @@ export interface TransferParams {
   newCommitment2: Uint8Array;
   newRoot: Uint8Array;
   shieldedProof: ShieldedProofBundle;
+  /** Operator ed25519 signature over the new root (required when POOL_SIGNED_ROOT). */
+  rootSignature?: Uint8Array;
 }
 
 /**
@@ -109,6 +141,7 @@ export async function buildTransferTx(params: TransferParams): Promise<string> {
     bytesN32ScVal(params.newCommitment1),
     bytesN32ScVal(params.newCommitment2),
     bytesN32ScVal(params.newRoot),
+    ...rootSigArgs(params.rootSignature),
     bytesScVal(params.shieldedProof.proof),
     bytesScVal(params.shieldedProof.pubSignals),
   ]);
@@ -123,6 +156,8 @@ export interface WithdrawParams {
   shieldedProof:  ShieldedProofBundle;
   /** Off-ramp compliance proof (PRD §6.2) */
   withdrawProof:  WithdrawProofBundle;
+  /** Operator ed25519 signature over the new root (required when POOL_SIGNED_ROOT). */
+  rootSignature?: Uint8Array;
 }
 
 /**
@@ -145,6 +180,7 @@ export async function buildWithdrawTx(params: WithdrawParams): Promise<string> {
     i128ScVal(amount),
     bytesN32ScVal(params.nullifier),
     bytesN32ScVal(params.newRoot),
+    ...rootSigArgs(params.rootSignature),
     bytesScVal(params.withdrawProof.proof),
     bytesScVal(params.withdrawProof.pubSignals),
     // Off-ramp compliance gate

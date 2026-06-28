@@ -1,6 +1,6 @@
 # ShadowWire
 
-**Private cross-border remittance corridor on Stellar** — fiat on-ramp → shielded transfer → fiat off-ramp, with amounts private throughout the corridor and compliance proofs at the edges.
+**Private cross-border remittance corridor on Stellar** — fiat on-ramp → shielded transfer → fiat off-ramp, with transfer amounts kept off the public ledger inside the shielded pool (revealed only at the regulated fiat edges, by AML design) and compliance proofs at every edge.
 
 Built for [Stellar Hacks: Real-World ZK](https://dorahacks.io/hackathon/stellar-hacks-zk) (DoraHacks).
 

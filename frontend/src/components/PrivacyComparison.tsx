@@ -59,8 +59,9 @@ export function PrivacyComparison() {
           <span className="mt-0.5 text-shield">
             <ShieldIcon size={14} />
           </span>
-          Amounts and parties never touch the ledger. Anchors see only their own
-          fiat leg.
+          In-pool transfers expose no amount or parties — only nullifiers and
+          commitments hit the chain. Amounts surface only at the regulated fiat
+          edges, where each anchor sees just its own leg.
         </p>
       </div>
     </div>

@@ -65,8 +65,9 @@ export default function HomePage() {
         <Reveal delay={160}>
           <p className="mx-auto mt-7 max-w-xl text-lg leading-relaxed text-fg-soft text-pretty">
             A shielded corridor on Stellar. Fiat on-ramp, a private pool, and
-            compliance proofs at every edge — so amounts stay hidden on the
-            public ledger while every transfer remains provably legitimate.
+            compliance proofs at every edge — so transfer amounts stay off the
+            public ledger, surfacing only at the regulated fiat edges, while
+            every step stays provably compliant.
           </p>
         </Reveal>
 
@@ -87,7 +88,7 @@ export default function HomePage() {
             {[
               { v: "Groth16", l: "On-chain proofs" },
               { v: "SEP-24", l: "Live anchor edges" },
-              { v: "Zero", l: "Amounts on ledger" },
+              { v: "Shielded", l: "In-transit amounts" },
             ].map((s) => (
               <div key={s.l} className="bg-ink-900/80 px-4 py-5">
                 <dt className="display text-2xl text-fg">{s.v}</dt>

@@ -19,6 +19,7 @@ const ROOT_KEY:  Symbol = symbol_short!("ROOT");
 const ASSET_KEY: Symbol = symbol_short!("ASSET");
 const NEXT_IDX:  Symbol = symbol_short!("NIDX");
 const CID_KEY:   Symbol = symbol_short!("CID");   // corridor_id
+const OPKEY_KEY: Symbol = symbol_short!("OPKEY"); // operator ed25519 pubkey (root attestor)
 
 /// TTL thresholds: ~1 day minimum, ~30 days extension target
 const TTL_MIN:    u32 = 17_280;
@@ -41,6 +42,12 @@ pub enum PoolError {
     /// Shielded proof's pub_withdraw_amount signal does not match the requested amount.
     /// Prevents draining the pool by claiming a larger withdrawal than the note holds.
     WithdrawAmountMismatch  = 8,
+    /// The new Merkle root was not signed by the registered operator key.
+    /// Closes the prover-supplied-root vulnerability: without an on-chain Poseidon
+    /// host function the contract cannot recompute the tree, so it instead requires
+    /// the operator (which derives the root from the real on-chain commitments) to
+    /// attest each new root. A forged root therefore cannot be installed.
+    UnauthorizedRoot        = 9,
 }
 
 #[contracttype]
@@ -120,6 +127,7 @@ impl ShieldedPool {
         registry:             Address,
         corridor_id:          u32,
         initial_root:         BytesN<32>,
+        operator_pubkey:      BytesN<32>,
     ) {
         env.storage().instance().set(&DataKey::Admin,               &admin);
         env.storage().instance().set(&ASSET_KEY,                    &asset);
@@ -128,6 +136,7 @@ impl ShieldedPool {
         env.storage().instance().set(&DataKey::Registry,            &registry);
         env.storage().instance().set(&CID_KEY,                      &corridor_id);
         env.storage().instance().set(&ROOT_KEY,                     &initial_root);
+        env.storage().instance().set(&OPKEY_KEY,                    &operator_pubkey);
         env.storage().instance().set(&NEXT_IDX,                     &0u32);
         env.storage().instance().extend_ttl(TTL_MIN, TTL_EXTEND);
     }
@@ -144,6 +153,11 @@ impl ShieldedPool {
     /// Number of notes ever inserted into the commitment tree.
     pub fn commitment_count(env: Env) -> u32 {
         env.storage().instance().get(&NEXT_IDX).unwrap_or(0)
+    }
+
+    /// The ed25519 public key whose signature authorizes new Merkle roots.
+    pub fn operator_pubkey(env: Env) -> BytesN<32> {
+        env.storage().instance().get(&OPKEY_KEY).unwrap()
     }
 
     /// Returns true if the spend nullifier has been recorded (note was spent).
@@ -238,6 +252,39 @@ impl ShieldedPool {
             return Err(PoolError::StaleRoot);
         }
         Ok(())
+    }
+
+    /// Verify that `new_root` was attested by the registered operator key.
+    ///
+    /// Why this is needed: deposit/transfer/withdraw store a caller-supplied
+    /// `new_root` as the pool's commitment-tree root. Without verification a
+    /// malicious caller could install the root of a *fabricated* tree containing a
+    /// note they "own", then withdraw against it and drain the pool. The ideal fix
+    /// (recompute the root on-chain via an incremental Poseidon Merkle tree) is not
+    /// possible today: soroban-sdk exposes only BLS12-381 and BN254 host functions,
+    /// not Poseidon (CAP-0075 is still a draft), and a pure-WASM Poseidon over 8
+    /// tree levels per insert is prohibitively expensive.
+    ///
+    /// Under the existing trusted-prover model the operator already derives the new
+    /// root from the *real* on-chain commitments (see mock-issuer pool-state.ts), so
+    /// we require it to sign that root. The signed message is domain-separated by
+    /// corridor id to prevent cross-pool replay. A forged root cannot be installed
+    /// because the attacker cannot produce the operator's signature.
+    fn assert_root_signed(
+        env:       &Env,
+        new_root:  &BytesN<32>,
+        signature: &BytesN<64>,
+    ) {
+        let op_key: BytesN<32> = env.storage().instance().get(&OPKEY_KEY).unwrap();
+        let corridor_id: u32 = env.storage().instance().get(&CID_KEY).unwrap();
+
+        // message = corridor_id (4B, big-endian) || new_root (32B)
+        let mut msg = Bytes::new(env);
+        msg.extend_from_array(&corridor_id.to_be_bytes());
+        msg.extend_from_array(&new_root.to_array());
+
+        // Panics (reverts the whole transaction) if the signature is invalid.
+        env.crypto().ed25519_verify(&op_key, &msg, signature);
     }
 
     /// Call ComplianceVerifier.verify() via cross-contract call.
@@ -337,6 +384,7 @@ impl ShieldedPool {
         amount:               i128,
         note_commitment:      BytesN<32>,
         new_root:             BytesN<32>,
+        root_signature:       BytesN<64>,
         compliance_nullifier: BytesN<32>,
         compliance_proof:     Bytes,
         compliance_pub_signals: Bytes,
@@ -346,6 +394,9 @@ impl ShieldedPool {
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
         }
+
+        // The new tree root must be attested by the operator (anti-forged-root).
+        Self::assert_root_signed(&env, &new_root, &root_signature);
 
         // Anti-replay: compliance proof can only be used once per corridor
         Self::mark_compliance_nullifier(&env, &compliance_nullifier)?;
@@ -410,10 +461,14 @@ impl ShieldedPool {
         new_commitment_1: BytesN<32>,
         new_commitment_2: BytesN<32>,
         new_root:        BytesN<32>,
+        root_signature:  BytesN<64>,
         shielded_proof:  Bytes,
         shielded_pub_signals: Bytes,
     ) -> Result<(), PoolError> {
         sender.require_auth();
+
+        // The new tree root must be attested by the operator (anti-forged-root).
+        Self::assert_root_signed(&env, &new_root, &root_signature);
 
         // Double-spend prevention: nullifier must not have been seen before
         Self::mark_spend_nullifier(&env, &spend_nullifier)?;
@@ -459,6 +514,7 @@ impl ShieldedPool {
         amount:               i128,
         spend_nullifier:      BytesN<32>,
         new_root:             BytesN<32>,
+        root_signature:       BytesN<64>,
         shielded_proof:       Bytes,
         shielded_pub_signals: Bytes,
         // Off-ramp compliance gate (PRD §6.2 — used at both deposit AND withdraw edges)
@@ -471,6 +527,9 @@ impl ShieldedPool {
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
         }
+
+        // The new tree root must be attested by the operator (anti-forged-root).
+        Self::assert_root_signed(&env, &new_root, &root_signature);
 
         // ── Shielded-transfer proof checks ────────────────────────────────────
 

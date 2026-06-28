@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useFreighter } from "@/hooks/useFreighter";
 import { useTestnetAddresses } from "@/hooks/useTestnetAddresses";
 import { FlowStep, StatusBadge } from "@/components/FlowStep";
+import { CorridorBanner } from "@/components/CorridorBanner";
 import { Button, FieldLabel, Kicker } from "@/components/ui/primitives";
 import {
   ArrowUpRightIcon,
@@ -22,8 +23,10 @@ import {
   generateComplianceProof,
   proveDeposit,
   generateShieldedTransferProof,
+  sealNoteReceipt,
 } from "@/lib/proofs";
 import type { NoteReceipt } from "@/lib/proofs";
+import { toQrDataUrl } from "@/lib/qr";
 import {
   addressToField,
   generateNoteRandomness,
@@ -57,6 +60,10 @@ export default function AlicePage() {
   const [sendAmount, setSendAmount]   = useState("90");
   const [txHash, setTxHash]           = useState<string | null>(null);
   const [noteReceipt, setNoteReceipt] = useState<string | null>(null);
+  const [noteSealed, setNoteSealed]   = useState(false);
+  const [noteQr, setNoteQr]           = useState<string | null>(null);
+  const [noteDeepLink, setNoteDeepLink] = useState<string | null>(null);
+  const [receivingKey, setReceivingKey] = useState("");
   const [myNotes, setMyNotes]         = useState<ShieldedNote[]>([]);
   const [activeNote, setActiveNote]   = useState<ShieldedNote | null>(null);
   const [copied, setCopied]           = useState(false);
@@ -176,7 +183,7 @@ export default function AlicePage() {
       const value                   = toIntStr(depositAmount);
 
       setStatus("Computing note commitment and new pool root (hash_util)...");
-      const { commitment, newRoot } = await proveDeposit({
+      const { commitment, newRoot, rootSignature } = await proveDeposit({
         ownerField, value, assetId: "3", blinding, secretKey,
       });
 
@@ -191,6 +198,7 @@ export default function AlicePage() {
         amount:               value,
         commitment,
         newRoot,
+        rootSignature,
         complianceNullifier:  complianceProof.complianceNullifier,
         complianceProof,
       });
@@ -253,6 +261,7 @@ export default function AlicePage() {
         newCommitment1:  shieldedProof.newCommitment1,
         newCommitment2:  shieldedProof.newCommitment2,
         newRoot:         shieldedProof.newRoot,
+        rootSignature:   shieldedProof.rootSignature,
         shieldedProof,
       });
 
@@ -267,12 +276,37 @@ export default function AlicePage() {
       setActiveNote(null);
       await refreshRoot();
 
-      // Build note receipt for the Seller
+      // Build note receipt for the Seller. Prefer the sealed (encrypted) channel:
+      // the note carries spend authority, so a plaintext receipt is a bearer token
+      // anyone can intercept and spend. If the Seller's receiving key is present we
+      // seal to it; otherwise we fall back to legacy plaintext with a clear warning.
       if (shieldedProof.bobNote) {
-        const receipt = walletEncodeReceipt(shieldedProof.bobNote as NoteReceipt);
+        const bobNote = shieldedProof.bobNote as NoteReceipt;
+        const key = receivingKey.trim();
+        let receipt: string;
+        let sealed = false;
+        if (key) {
+          receipt = sealNoteReceipt(bobNote, key);
+          sealed = true;
+        } else {
+          receipt = walletEncodeReceipt(bobNote);
+        }
         setNoteReceipt(receipt);
+        setNoteSealed(sealed);
+
+        if (sealed && typeof window !== "undefined") {
+          const link = `${window.location.origin}/bob?note=${encodeURIComponent(receipt)}`;
+          setNoteDeepLink(link);
+          try { setNoteQr(await toQrDataUrl(link)); } catch { setNoteQr(null); }
+        } else {
+          setNoteDeepLink(null);
+          setNoteQr(null);
+        }
+
         setStatus(
-          `Transfer confirmed. Copy the receipt below and send it to the Seller: ${result.hash.slice(0, 12)}...`
+          sealed
+            ? `Transfer confirmed. Sealed note ready — scan the QR or send the link to the Seller: ${result.hash.slice(0, 12)}...`
+            : `Transfer confirmed. ⚠ No receiving key — sending a PLAINTEXT receipt. Paste the Seller's receiving key to encrypt: ${result.hash.slice(0, 12)}...`
         );
       } else {
         setStatus(`Transfer confirmed: ${result.hash.slice(0, 12)}...`);
@@ -358,6 +392,9 @@ export default function AlicePage() {
         </div>
       )}
 
+      {/* Cross-border corridor */}
+      <CorridorBanner />
+
       {/* Flow */}
       <div>
         <FlowStep step={1} title="SEP-24 deposit"
@@ -407,6 +444,12 @@ export default function AlicePage() {
                 placeholder="G… or pool Field ID"
                 className="field" />
             </FieldLabel>
+            <FieldLabel label="Seller receiving key" hint="encrypts the note — get it from the Seller">
+              <input type="text" value={receivingKey}
+                onChange={(e) => setReceivingKey(e.target.value)}
+                placeholder="Paste the Seller's receiving key (base64) to seal the note"
+                className="field num text-xs" />
+            </FieldLabel>
             <div className="flex flex-wrap items-end gap-3">
               <FieldLabel label="Amount to send" hint={assetCode}>
                 <input type="text" value={sendAmount}
@@ -423,22 +466,43 @@ export default function AlicePage() {
           </div>
 
           {noteReceipt && (
-            <div className="mt-5 rounded-xl border border-shield/30 bg-shield/[0.06] p-4">
+            <div className={`mt-5 rounded-xl border p-4 ${noteSealed ? "border-shield/30 bg-shield/[0.06]" : "border-warn/40 bg-warn/[0.06]"}`}>
               <div className="mb-2 flex items-center justify-between">
-                <p className="kicker" style={{ color: "#46d6a6" }}>
+                <p className="kicker" style={{ color: noteSealed ? "#46d6a6" : "#f0b429" }}>
                   <ShieldIcon size={13} />
-                  Note receipt — send to the Seller off-chain
+                  {noteSealed ? "Sealed note — only the Seller can open it" : "⚠ Plaintext receipt — anyone can spend it"}
                 </p>
                 <button onClick={copyReceipt} className="btn btn-ghost px-2.5 py-1.5 text-xs">
                   {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
                   {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              <textarea readOnly value={noteReceipt} rows={3}
-                className="field num resize-none text-xs"
-                onClick={(e) => (e.target as HTMLTextAreaElement).select()} />
-              <p className="mt-2 text-xs text-fg-faint">
-                Share via an encrypted channel. The Seller pastes this to claim the funds.
+
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+                <div className="min-w-0 flex-1">
+                  <textarea readOnly value={noteReceipt} rows={4}
+                    className="field num w-full resize-none text-xs"
+                    onClick={(e) => (e.target as HTMLTextAreaElement).select()} />
+                  {noteDeepLink && (
+                    <a href={noteDeepLink} target="_blank" rel="noreferrer"
+                      className="num mt-2 inline-flex items-center gap-1.5 text-xs text-fg-muted transition-colors hover:text-shield">
+                      Open claim link
+                      <ArrowUpRightIcon size={13} />
+                    </a>
+                  )}
+                </div>
+                {noteQr && (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img src={noteQr} alt="Scan to claim note"
+                    width={128} height={128}
+                    className="h-32 w-32 shrink-0 self-center rounded-lg border border-surface-border bg-white p-1.5" />
+                )}
+              </div>
+
+              <p className="mt-3 text-xs text-fg-faint">
+                {noteSealed
+                  ? "The note is encrypted to the Seller's receiving key (X25519 + XSalsa20-Poly1305). Even if intercepted, only the Seller can decrypt and spend it."
+                  : "No receiving key was provided, so this receipt is unencrypted — treat it like cash. Paste the Seller's receiving key above before sending to encrypt it."}
               </p>
             </div>
           )}

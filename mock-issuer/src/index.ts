@@ -29,6 +29,10 @@ import {
   assertRootMatchesChain,
   readPoolRoot,
 } from "./pool-state.js";
+import { getOperatorPublicKeyHex, signRoot } from "./operator.js";
+import { getAttestationForSide, getRegistryRoot, type KycSide } from "./kyc-registry.js";
+import { getCorridor } from "./corridors.js";
+import { resolveKycMode, readRegistryRoot, type KycMode } from "./registry-state.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT      = path.resolve(__dirname, "../..");
@@ -64,6 +68,40 @@ const DEMO_KYC_BASE = {
 
 // Default asset_id (Field element identifying the SRT token on testnet)
 const ASSET_ID = "3";
+
+// corridor_id this pool was constructed with — MUST match the pool's CID storage,
+// because the operator signs `corridor_id || new_root` and the contract verifies it.
+const CORRIDOR_ID = Number(process.env.CORRIDOR_ID ?? DEMO_KYC_BASE.corridor_id);
+
+// KYC_MODE=auto (default) reads the on-chain ComplianceRegistry root and picks
+// demo vs registry so compliance proofs always match what deposit() verifies.
+// KYC_MODE=registry|demo forces a mode (useful for testing).
+let kycMode: KycMode = "demo";
+
+/**
+ * KYC inputs for a compliance proof on the given corridor side. In registry mode
+ * the sending side carries the US leaf and the receiving side the NG leaf, with
+ * corridor limits from the corridor policy; in demo mode it is the legacy leaf.
+ */
+function complianceKycInputs(side: KycSide) {
+  if (kycMode !== "registry") {
+    return { ...DEMO_KYC_BASE };
+  }
+  const att = getAttestationForSide(side);
+  const corridor = getCorridor(CORRIDOR_ID);
+  return {
+    secret_salt:     att.secret_salt,
+    kyc_tier:        att.kyc_tier,
+    sanctioned_flag: att.sanctioned_flag,
+    country_code:    att.country_code,
+    merkle_siblings: att.merkle_siblings,
+    merkle_index:    att.merkle_index,
+    merkle_root:     att.merkle_root,
+    corridor_id:     String(corridor.id),
+    min_kyc_tier:    corridor.minKycTier,
+    max_amount:      corridor.maxAmount,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -353,8 +391,30 @@ app.get("/health", (_req, res) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/attestation", (_req, res) => {
+  if (kycMode === "registry") {
+    try {
+      const corridor = getCorridor(CORRIDOR_ID);
+      const send = getAttestationForSide("send");
+      const recv = getAttestationForSide("receive");
+      res.json({
+        mode:        "registry",
+        merkleRoot:  getRegistryRoot(),
+        corridorId:  String(corridor.id),
+        minKycTier:  Number(corridor.minKycTier),
+        maxAmount:   corridor.maxAmount,
+        // Cross-border: distinct sending/receiving jurisdictions, each KYC-bound.
+        sending:     { country: corridor.sendingLabel,   countryCode: send.country_code, kycTier: send.kyc_tier },
+        receiving:   { country: corridor.receivingLabel, countryCode: recv.country_code, kycTier: recv.kyc_tier },
+      });
+      return;
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+      return;
+    }
+  }
   const i = DEMO_KYC_BASE;
   res.json({
+    mode:        "demo",
     merkleRoot:  i.merkle_root,
     corridorId:  i.corridor_id,
     minKycTier:  Number(i.min_kyc_tier),
@@ -362,6 +422,25 @@ app.get("/api/attestation", (_req, res) => {
     countryCode: i.country_code,
     kycTier:     i.kyc_tier,
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/corridor — the active cross-border lane (sending -> receiving).
+// ---------------------------------------------------------------------------
+app.get("/api/corridor", (_req, res) => {
+  try {
+    const c = getCorridor(CORRIDOR_ID);
+    res.json({
+      id: c.id,
+      sending:   { country: c.sendingLabel,   countryCode: c.sendingCountry },
+      receiving: { country: c.receivingLabel, countryCode: c.receivingCountry },
+      minKycTier: Number(c.minKycTier),
+      maxAmount:  c.maxAmount,
+      kycMode,
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -386,17 +465,20 @@ app.post("/api/prove/compliance", (req, res) => {
   const depositorPubkey = ownerField ?? "1";
 
   try {
+    // Deposit is the on-ramp (sending) side of the corridor.
+    const kyc = complianceKycInputs("send");
+
     // Step 1: pre-compute the nullifier using the compliance_nf_util circuit.
     const complianceNullifier = computeComplianceNullifier(
-      DEMO_KYC_BASE.secret_salt,
+      kyc.secret_salt,
       depositorPubkey,
       String(amount),
-      DEMO_KYC_BASE.corridor_id,
+      kyc.corridor_id,
     );
 
     // Step 2: generate the Groth16 proof with the nullifier as a public input.
     const inputs = {
-      ...DEMO_KYC_BASE,
+      ...kyc,
       amount:               String(amount),
       depositor_pubkey:     depositorPubkey,
       compliance_nullifier: complianceNullifier,
@@ -464,7 +546,7 @@ app.post("/api/prove/deposit", async (req, res) => {
     const { leaves } = await loadAllCommitments();
     const newRoot = computeNewRoot(leaves, commitment);
 
-    res.json({ commitment, newRoot });
+    res.json({ commitment, newRoot, rootSignature: signRoot(CORRIDOR_ID, newRoot) });
   } catch (err: unknown) {
     res.status(500).json({ error: String(err) });
   }
@@ -648,6 +730,7 @@ app.post("/api/prove/transfer", async (req, res) => {
       newCommitment2: actualCommit2,
       merkleRoot:     result.publicSignals[0] ?? "0",
       newRoot:        actualNewRoot,
+      rootSignature:  signRoot(CORRIDOR_ID, actualNewRoot),
       bobNote,
     });
   } catch (err: unknown) {
@@ -881,14 +964,16 @@ app.post("/api/prove/withdraw", async (req, res) => {
     // Pre-compute the compliance_nullifier via compliance_nf_util, then pass it
     // as a public input.  Using body.ownerField (Bob's pubkey) as depositor_pubkey
     // ensures Bob's off-ramp nullifier is distinct from Alice's deposit nullifier.
+    // Withdraw is the off-ramp (receiving) side of the corridor.
+    const withdrawKyc = complianceKycInputs("receive");
     const withdrawComplianceNullifier = computeComplianceNullifier(
-      DEMO_KYC_BASE.secret_salt,
+      withdrawKyc.secret_salt,
       body.ownerField,
       outputValue1,
-      DEMO_KYC_BASE.corridor_id,
+      withdrawKyc.corridor_id,
     );
     const complianceInputs = {
-      ...DEMO_KYC_BASE,
+      ...withdrawKyc,
       amount:               outputValue1,
       depositor_pubkey:     body.ownerField,
       compliance_nullifier: withdrawComplianceNullifier,
@@ -905,6 +990,7 @@ app.post("/api/prove/withdraw", async (req, res) => {
       newCommitment2: shieldedResult.publicSignals[3] ?? "0",
       merkleRoot:     shieldedResult.publicSignals[0] ?? "0",
       newRoot,
+      rootSignature:  signRoot(CORRIDOR_ID, newRoot),
       // Compliance proof for off-ramp KYC gate
       complianceProof:          complianceResult.proof,
       compliancePubSignals:     complianceResult.pubSignals,
@@ -943,10 +1029,40 @@ app.get("/api/attestation/status", (_req, res) => {
   res.json({ complianceTree: "active", leaves: 1, corridors: [1] });
 });
 
-app.listen(PORT, () => {
-  console.log(`ShadowWire proving server on http://localhost:${PORT}`);
-  console.log(`POST /api/prove/compliance  { amount }`);
-  console.log(`POST /api/prove/deposit     { ownerField, value, blinding, secretKey }`);
-  console.log(`POST /api/prove/transfer    { ownerField, value, blinding, secretKey, recipient, outputValue1, fee }`);
-  console.log(`POST /api/prove/withdraw    { ownerField, value, blinding, secretKey, recipient }`);
+// Operator root-attestation public key (hex). The pool (v9+) is constructed with
+// this key and verifies that every new root is signed by it. Used by the deploy
+// script (scripts/deploy-pool-v9.mjs) to wire the constructor argument.
+app.get("/api/operator-pubkey", (_req, res) => {
+  res.json({ operatorPubkey: getOperatorPublicKeyHex(), corridorId: CORRIDOR_ID });
+});
+
+async function main() {
+  try {
+    kycMode = await resolveKycMode(
+      process.env.KYC_MODE,
+      DEMO_KYC_BASE.merkle_root,
+      getRegistryRoot(),
+    );
+    const onChain = await readRegistryRoot();
+    console.log(`KYC mode: ${kycMode} (on-chain registry root ${onChain.slice(0, 14)}…)`);
+  } catch (err) {
+    console.warn(`Could not auto-detect KYC mode (${err}) — using demo`);
+    kycMode = process.env.KYC_MODE === "registry" ? "registry" : "demo";
+    console.log(`KYC mode: ${kycMode} (fallback)`);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`ShadowWire proving server on http://localhost:${PORT}`);
+    console.log(`Operator root-attestation pubkey: ${getOperatorPublicKeyHex()}`);
+    console.log(`POST /api/prove/compliance  { amount }`);
+    console.log(`POST /api/prove/deposit     { ownerField, value, blinding, secretKey }`);
+    console.log(`POST /api/prove/transfer    { ownerField, value, blinding, secretKey, recipient, outputValue1, fee }`);
+    console.log(`POST /api/prove/withdraw    { ownerField, value, blinding, secretKey, recipient }`);
+    console.log(`GET  /api/operator-pubkey`);
+  });
+}
+
+main().catch(err => {
+  console.error("Failed to start proving server:", err);
+  process.exit(1);
 });

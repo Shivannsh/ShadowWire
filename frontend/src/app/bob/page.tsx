@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useFreighter } from "@/hooks/useFreighter";
 import { useTestnetAddresses } from "@/hooks/useTestnetAddresses";
 import { FlowStep, StatusBadge } from "@/components/FlowStep";
+import { CorridorBanner } from "@/components/CorridorBanner";
 import { Button, FieldLabel, Kicker } from "@/components/ui/primitives";
 import {
   ArrowUpRightIcon,
@@ -11,7 +12,11 @@ import {
   DownloadIcon,
   ShieldIcon,
   GlobeIcon,
+  CopyIcon,
+  CheckIcon,
 } from "@/components/ui/icons";
+import { getReceivingPublicKey } from "@/lib/noteCrypto";
+import { toQrDataUrl } from "@/lib/qr";
 import { buildWithdrawTx, getPoolRoot, rootToHex } from "@/lib/pool";
 import { submitTransaction } from "@/lib/transactions";
 import { generateWithdrawProof, decodeNoteReceipt } from "@/lib/proofs";
@@ -44,6 +49,9 @@ export default function BobPage() {
   const [poolRoot, setPoolRoot]       = useState<string | null>(null);
   const [txHash, setTxHash]           = useState<string | null>(null);
   const [withdrawAddr, setWithdrawAddr] = useState("");
+  const [receivingPubKey, setReceivingPubKey] = useState("");
+  const [receivingQr, setReceivingQr] = useState<string | null>(null);
+  const [keyCopied, setKeyCopied]     = useState(false);
 
   const poolAddress = addresses?.contracts?.shielded_pool ?? "";
   const assetCode   = addresses?.anchor?.asset_code   ?? "SRT";
@@ -67,6 +75,29 @@ export default function BobPage() {
   }, [poolAddress, address, activeNote]);
 
   useEffect(() => { if (address) setWithdrawAddr(address); }, [address]);
+
+  // The Seller's receiving key: shared with the Buyer so the note can be sealed
+  // (encrypted) to it. Generated/persisted locally; the public half is safe to share.
+  useEffect(() => {
+    const pub = getReceivingPublicKey();
+    setReceivingPubKey(pub);
+    toQrDataUrl(pub).then(setReceivingQr).catch(() => setReceivingQr(null));
+  }, []);
+
+  // Support claim deep links: /bob?note=SWNOTE1.… prefills the sealed package.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const note = new URLSearchParams(window.location.search).get("note");
+    if (note) setNoteInput(note);
+  }, []);
+
+  const copyReceivingKey = () => {
+    if (!receivingPubKey) return;
+    navigator.clipboard?.writeText(receivingPubKey).then(() => {
+      setKeyCopied(true);
+      setTimeout(() => setKeyCopied(false), 1600);
+    });
+  };
 
   useEffect(() => {
     if (connected && address) {
@@ -173,6 +204,7 @@ export default function BobPage() {
         amount:        activeNote.value,
         nullifier:     withdrawProof.spendNullifier,
         newRoot:       withdrawProof.newRoot,
+        rootSignature: withdrawProof.rootSignature,
         shieldedProof: withdrawProof,
         withdrawProof,
       });
@@ -259,6 +291,37 @@ export default function BobPage() {
         </div>
       )}
 
+      {/* Receiving key — share with the Buyer so they can seal the note to you */}
+      {connected && (
+        <div className="mb-8 rounded-2xl border border-shield/25 bg-shield/[0.06] p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="kicker" style={{ color: "#46d6a6" }}>
+              <ShieldIcon size={13} />
+              Your receiving key — send to the Buyer
+            </p>
+            <button onClick={copyReceivingKey} className="btn btn-ghost px-2.5 py-1.5 text-xs">
+              {keyCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+              {keyCopied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <input readOnly value={receivingPubKey}
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+              className="field num min-w-0 flex-1 text-xs" />
+            {receivingQr && (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img src={receivingQr} alt="Receiving key QR"
+                width={96} height={96}
+                className="h-24 w-24 shrink-0 self-center rounded-lg border border-surface-border bg-white p-1.5" />
+            )}
+          </div>
+          <p className="mt-2 text-xs text-fg-faint">
+            The Buyer encrypts your note to this key. Only this device can decrypt it —
+            keep it if you clear browser storage.
+          </p>
+        </div>
+      )}
+
       {/* Spendable notes */}
       {myNotes.length > 0 && (
         <div className="mb-8 rounded-2xl border border-surface-border bg-ink-850/50 p-4">
@@ -291,16 +354,19 @@ export default function BobPage() {
         </div>
       )}
 
+      {/* Cross-border corridor */}
+      <CorridorBanner />
+
       {/* Flow */}
       <div>
         <FlowStep step={1} title="Claim note"
-          description="Paste the base64 receipt the Buyer sent you off-chain."
+          description="Paste the sealed note (SWNOTE1.…) the Buyer sent, or open their claim link."
           status={activeStep === 1 ? "active" : activeStep > 1 ? "done" : "pending"}>
-          <FieldLabel label="Note receipt" hint="base64">
+          <FieldLabel label="Note receipt" hint="sealed (SWNOTE1.…) or legacy base64">
             <textarea
               value={noteInput}
               onChange={(e) => setNoteInput(e.target.value)}
-              placeholder="Paste the base64 note receipt from the Buyer…"
+              placeholder="Paste the sealed note package from the Buyer…"
               rows={3}
               className="field num resize-none text-xs"
             />
