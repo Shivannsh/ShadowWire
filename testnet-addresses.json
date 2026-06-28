@@ -10,7 +10,7 @@
     "compliance_registry": "CCILBECK36TSTIL5JWODSFJJLTBWXPPRWN6IW5C56NFSOLESEEAVIR7Z",
     "compliance_verifier": "CAZZEALQBXYDW7RPHDHWJ6OYZS7TP2AH256RKZO6X6CQRFDY2LCHD4HL",
     "shielded_transfer_verifier": "CDUKVBXXZZQM4XP6FK73NWCVWUIDP3RXBWLJWDDWCTANQ54NL7NGEGHS",
-    "shielded_pool": "CCTU6AZJZKEJ57CYFEPCBAW4OEDXTS2SBTBHMRVKW6LA2ZUHLV6IBLWV",
+    "shielded_pool": "CASPUQV5TZFUKR6YYXAQXEO43CGRUNLFZUUCQHHIQV6RDTZJEEY5QVZW",
     "shielded_pool_v8_prev": "CADI5DUZZBI4QP2PKGD6BAMHLBIXWIWKOTBKMU5F5QEXAE7LW2HWI2VY",
     "shielded_pool_v4_prev": "CCOP4WWTDKVZRP6SM4XONN7TRNMIEY3X3ZNZ2ABCENS5XYPMVTXO6LC7",
     "shielded_pool_v3_prev": "CBLNSBJCL2EEFGTAXBVDZ737FJKYLNBB7EQ5KWSPKFOSLPHBCFPMRUHX",
@@ -19,7 +19,10 @@
     "pipeline_test_verifier": "CCDT6XZNEGD2GL45CKX3U4CEK47EAFARB2CX4U44CWQX2ZJQ6LDYROC2",
     "shielded_pool_v5_prev": "CB7UJQVON2Y3PC4KQ5XMBYE42BX5WISQ22H357RAPTCFLIEX4FLMOSUV",
     "shielded_pool_v6_prev": "CDJYBYYGNZRNVPOTGN4D64VLTYCCZERGKXABXKPXH5JF7RXMIDKW3AWJ",
-    "shielded_pool_v7_prev": "CBNQW5HJ3EJSTUEFJT6ZFXZIWETFYRN7YWKFXJAYUQCMFKZDU6RXBCNI"
+    "shielded_pool_v7_prev": "CBNQW5HJ3EJSTUEFJT6ZFXZIWETFYRN7YWKFXJAYUQCMFKZDU6RXBCNI",
+    "attest_protocol": "CA4NFQKEJGSCLZ5KTIGAAK3KCUH3QHMHSQJNJ73MCDVB44ZRM7IQLSGP",
+    "shielded_pool_v9_prev": "CCTU6AZJZKEJ57CYFEPCBAW4OEDXTS2SBTBHMRVKW6LA2ZUHLV6IBLWV",
+    "shielded_pool_v10_prev": "CCYWBSSASNN5235GCKRDS64XPSJNJYPP47AKGLBLCIV6PWU4IR3DSRR7"
   },
   "txs": {
     "pipeline_test_deploy": "4d4551751ac6ffa3d072cd2926e27893ae32dee1edc5323756d2a75519603a58",
@@ -58,11 +61,42 @@
     "corridor_withdraw_v8": "75d23d30076673c3130ef6f454c4247e996e201ddd071912668c9a51eaf4b458",
     "registry_root_update": "86422a0fa256e31f841eb1590d7bee39830f14b747be9e5027daef66dfa31393",
     "pool_v9_deploy": "8893bc531f61105744b8836d7e74e342838b26fe4c065368fb4f04ef1814592b",
-    "pool_v9_wasm_upload": "eb89eb451ae2aa6d30c8b96f0bc711ed3fe4361e04ac99c4ebb834e992afda9c"
+    "pool_v9_wasm_upload": "eb89eb451ae2aa6d30c8b96f0bc711ed3fe4361e04ac99c4ebb834e992afda9c",
+    "attest_protocol_upload": "",
+    "attest_protocol_deploy": "5fb387d64bc26eea42aa96d55e6c36b5d3b001af6536eb7a19b4f3cb4fba1ada",
+    "attest_protocol_init": "43e4595f65a1867b70da0828650f9634b811f95ff46942b47ca9e26d0bbc30e6",
+    "attest_kyc_schema_register": "5a282b1ac83b34ec5ecae82e75f1f08fb871c3261d02686067c2f8f4fdcc58ee",
+    "attest_bls_register": "bd97f3d6dba74e9ee4b1d5c7c6036afa3c315d81c4493b76c202f6933535accf",
+    "pool_v10_deploy": "85add528df0461db1f4e20ca5ea337a786df59f6d452611b3095b4ff27f09117",
+    "kyc_enroll_alice": "1994434caf03d3d909a05dc07ea1f8092ccd95f2642e74b02f2336da7e41f8a6",
+    "kyc_enroll_bob": "58f29fb13a11a02af579f1489d334ebd0b654c768fba57e8449744e809227459"
   },
   "anchor": {
     "home_domain": "testanchor.stellar.org",
     "asset_code": "SRT",
     "asset_issuer": "GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6B"
+  },
+  "attestation": {
+    "provider": "AttestProtocol",
+    "protocol": "CA4NFQKEJGSCLZ5KTIGAAK3KCUH3QHMHSQJNJ73MCDVB44ZRM7IQLSGP",
+    "kyc_authority": "GAYV3WPKY5P436XUVOMEMMDTRQJXVHLAI2G5ABY57JCEYOT6HNKATRNN",
+    "kyc_schema_uid": "5f21f4a2d30d9d46b929c15f22d74e65b49c4ee5a2fb35e4a1e22010b72309c3",
+    "kyc_schema_def": "struct KYC { bool verified; u32 tier; u32 country; }",
+    "source_commit": "b242b5b630d1ff41610d6b60e511792fef59d3d4",
+    "bls_public_key": "0d38d49a6f63b7376f9cef50d6a44dc7b7d462eb0a85e6761be9a1b9882224ea36216995a5f68014e4a70f8f80c26d0e198deaff1e33470ecb7a5f556a29eb76cbff49b16f62d6de792754e92b4ca7cad91ec917a4f05ab62c05315d012f9d560bc6cc8c886d0fde143d2661933d2b90257090df2c715bf4c2e75ce2f444e2385722275309b7601007f3fa6900224b0a12322dafbdf4665f9a9853c9b0376d8567c8bfa000888c709fe2b9dfe0bbf9dcbf3de0f260f51118d1cbca56123a73ea",
+    "attestations": {
+      "alice": {
+        "uid": "e2f2a887130f330d7c8f6c123f97fe988588761f9ea0acd3ffbbf2a065c369b6",
+        "subject": "GBOPHBTX6MHD2326B4SQBTOYC5N3MVS4IKFQZAOUHCBQEQLLLTEBCKLF",
+        "tier": 2,
+        "country": 840
+      },
+      "bob": {
+        "uid": "89edbd6ddff434709a8fbeaf2d088517c635564a04be3dfa84c39f2a41af9467",
+        "subject": "GBTFDNVSALYFN2ZIBVOFKXKUHUGXKU2E2ZBDAXGFXK33D4RNB5MGQZK7",
+        "tier": 2,
+        "country": 566
+      }
+    }
   }
 }

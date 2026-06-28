@@ -45,6 +45,26 @@ function rootSigArgs(signature?: Uint8Array): StellarSdk.xdr.ScVal[] {
   return [bytesN64ScVal(signature)];
 }
 
+/**
+ * Whether the deployed pool enforces an on-chain AttestProtocol KYC attestation
+ * (v10+). When enabled, deposit()/withdraw() take a trailing 32-byte attestation
+ * UID that the pool verifies via a cross-contract get_attestation() call.
+ * Defaults off so v9 pools keep working unchanged.
+ */
+const POOL_KYC_ATTEST =
+  process.env.NEXT_PUBLIC_POOL_KYC_ATTEST === "true";
+
+function kycAttestArgs(attestationUid?: Uint8Array): StellarSdk.xdr.ScVal[] {
+  if (!POOL_KYC_ATTEST) return [];
+  if (!attestationUid) {
+    throw new Error(
+      "NEXT_PUBLIC_POOL_KYC_ATTEST is enabled but no KYC attestation UID was provided. " +
+        "Enroll the wallet via the issuer (POST /api/kyc/enroll) first."
+    );
+  }
+  return [bytesN32ScVal(attestationUid)];
+}
+
 function i128ScVal(value: bigint): StellarSdk.xdr.ScVal {
   return StellarSdk.nativeToScVal(value, { type: "i128" });
 }
@@ -82,6 +102,8 @@ export interface DepositParams {
   complianceProof: ComplianceProofBundle;
   /** Operator ed25519 signature over the new root (required when POOL_SIGNED_ROOT). */
   rootSignature?: Uint8Array;
+  /** AttestProtocol KYC attestation UID (required when POOL_KYC_ATTEST). */
+  kycAttestationUid?: Uint8Array;
 }
 
 /**
@@ -107,6 +129,7 @@ export async function buildDepositTx(params: DepositParams): Promise<string> {
     bytesN32ScVal(params.complianceNullifier),
     bytesScVal(params.complianceProof.proof),
     bytesScVal(params.complianceProof.pubSignals),
+    ...kycAttestArgs(params.kycAttestationUid),
   ]);
 }
 
@@ -158,6 +181,8 @@ export interface WithdrawParams {
   withdrawProof:  WithdrawProofBundle;
   /** Operator ed25519 signature over the new root (required when POOL_SIGNED_ROOT). */
   rootSignature?: Uint8Array;
+  /** AttestProtocol KYC attestation UID (required when POOL_KYC_ATTEST). */
+  kycAttestationUid?: Uint8Array;
 }
 
 /**
@@ -187,6 +212,7 @@ export async function buildWithdrawTx(params: WithdrawParams): Promise<string> {
     bytesN32ScVal(params.withdrawProof.complianceNullifier),
     bytesScVal(params.withdrawProof.complianceProof),
     bytesScVal(params.withdrawProof.compliancePubSignals),
+    ...kycAttestArgs(params.kycAttestationUid),
   ]);
 }
 

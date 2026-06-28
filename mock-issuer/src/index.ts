@@ -31,6 +31,12 @@ import {
 } from "./pool-state.js";
 import { getOperatorPublicKeyHex, signRoot } from "./operator.js";
 import { getAttestationForSide, getRegistryRoot, type KycSide } from "./kyc-registry.js";
+import {
+  loadAttestConfig,
+  getBlsPublicKeyHex,
+  getKycStatus,
+  enrollKyc,
+} from "./kyc-attest.js";
 import { getCorridor } from "./corridors.js";
 import { resolveKycMode, readRegistryRoot, type KycMode } from "./registry-state.js";
 
@@ -1036,6 +1042,72 @@ app.get("/api/operator-pubkey", (_req, res) => {
   res.json({ operatorPubkey: getOperatorPublicKeyHex(), corridorId: CORRIDOR_ID });
 });
 
+// ---------------------------------------------------------------------------
+// AttestProtocol on-chain KYC attestations (Tier C)
+//
+// The issuer is a real KYC *authority*: it issues delegated AttestProtocol
+// attestations about a wallet, which the ShieldedPool then verifies on-chain.
+//   GET  /api/kyc/config            -> protocol id, authority, schema, bls pubkey
+//   GET  /api/kyc/status?address=G  -> { verified, attestationUid, ... }
+//   POST /api/kyc/enroll { address, side } -> issues delegated attestation
+// ---------------------------------------------------------------------------
+
+// Country code per corridor side (ISO-3166 numeric). Sending = US(840), receiving = NG(566).
+function sideKycAttributes(side: KycSide): { tier: number; country: number } {
+  return side === "receive" ? { tier: 2, country: 566 } : { tier: 2, country: 840 };
+}
+
+app.get("/api/kyc/config", (_req, res) => {
+  const cfg = loadAttestConfig();
+  if (!cfg) {
+    res.json({ configured: false });
+    return;
+  }
+  res.json({
+    configured:   true,
+    provider:     "AttestProtocol",
+    protocol:     cfg.protocol,
+    authority:    cfg.authority,
+    schemaUid:    cfg.schemaUid.toString("hex"),
+    schemaDef:    cfg.schemaDef,
+    blsPublicKey: getBlsPublicKeyHex(),
+  });
+});
+
+app.get("/api/kyc/status", async (req, res) => {
+  try {
+    const address = String(req.query.address ?? "").trim();
+    if (!address.startsWith("G") || address.length !== 56) {
+      res.status(400).json({ error: "valid `address` (G...) query param required" });
+      return;
+    }
+    res.json(await getKycStatus(address));
+  } catch (err: any) {
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
+app.post("/api/kyc/enroll", async (req, res) => {
+  try {
+    const address = String(req.body?.address ?? "").trim();
+    if (!address.startsWith("G") || address.length !== 56) {
+      res.status(400).json({ error: "valid `address` (G...) required" });
+      return;
+    }
+    const side: KycSide = req.body?.side === "receive" ? "receive" : "send";
+    if (!loadAttestConfig()) {
+      res.status(503).json({ error: "AttestProtocol not configured — run scripts/deploy-attest-protocol.mjs" });
+      return;
+    }
+    const { tier, country } = sideKycAttributes(side);
+    const result = await enrollKyc(address, { tier, country, side });
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    console.error("KYC enroll failed:", err);
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
 async function main() {
   try {
     kycMode = await resolveKycMode(
@@ -1059,6 +1131,15 @@ async function main() {
     console.log(`POST /api/prove/transfer    { ownerField, value, blinding, secretKey, recipient, outputValue1, fee }`);
     console.log(`POST /api/prove/withdraw    { ownerField, value, blinding, secretKey, recipient }`);
     console.log(`GET  /api/operator-pubkey`);
+    const attestCfg = loadAttestConfig();
+    if (attestCfg) {
+      console.log(`AttestProtocol KYC: ${attestCfg.protocol} (authority ${attestCfg.authority.slice(0, 8)}…)`);
+      console.log(`POST /api/kyc/enroll        { address, side }`);
+      console.log(`GET  /api/kyc/status        ?address=G…`);
+      console.log(`GET  /api/kyc/config`);
+    } else {
+      console.log(`AttestProtocol KYC: not configured (run scripts/deploy-attest-protocol.mjs)`);
+    }
   });
 }
 

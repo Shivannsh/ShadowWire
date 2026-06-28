@@ -24,3 +24,11 @@ coverage/
 out/
 SentinelVault/
 mock-issuer/.operator-key.json
+mock-issuer/.kyc-bls-key.json
+mock-issuer/.kyc-submitter-key.json
+mock-issuer/.kyc-attestations.json
+
+contracts/**/test_snapshots/
+
+# Vendored AttestProtocol contract wasm must be tracked despite the *.wasm rule
+!contracts/external/*.wasm

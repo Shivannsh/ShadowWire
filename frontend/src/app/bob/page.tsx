@@ -34,6 +34,8 @@ import {
   hasTrustline,
 } from "@/lib/stellar";
 import { runSep24Withdraw, openSep24Popup } from "@/lib/sep24";
+import { KycBadge } from "@/components/KycBadge";
+import { ensureKycAttestation } from "@/lib/kyc";
 
 export default function BobPage() {
   const { address, connected, connect, sign, isCorrectNetwork } = useFreighter();
@@ -198,6 +200,10 @@ export default function BobPage() {
         commitment:  activeNote.commitment,
       });
 
+      // Tier C: ensure an on-chain AttestProtocol KYC attestation exists for the
+      // recipient at the off-ramp edge (enrolling via the issuer if needed).
+      const kycAttestationUid = await ensureKycAttestation(address, "receive", setStatus);
+
       setStatus("Building withdraw transaction (shielded + compliance proofs on-chain)...");
       const xdr = await buildWithdrawTx({
         recipient:     address,
@@ -207,6 +213,7 @@ export default function BobPage() {
         rootSignature: withdrawProof.rootSignature,
         shieldedProof: withdrawProof,
         withdrawProof,
+        kycAttestationUid,
       });
 
       setStatus("Sign in Freighter...");
@@ -356,6 +363,11 @@ export default function BobPage() {
 
       {/* Cross-border corridor */}
       <CorridorBanner />
+
+      {/* On-chain KYC attestation (AttestProtocol) */}
+      {connected && address && (
+        <KycBadge address={address} side="receive" onStatus={setStatus} />
+      )}
 
       {/* Flow */}
       <div>

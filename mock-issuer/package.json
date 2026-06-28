@@ -7,6 +7,7 @@
     "build-merkle": "tsx src/build-tree.ts"
   },
   "dependencies": {
+    "@attestprotocol/stellar-sdk": "^2.0.2",
     "@aztec/bb.js": "^4.3.1",
     "@stellar/stellar-sdk": "^16.0.1",
     "circomlibjs": "^0.1.7",

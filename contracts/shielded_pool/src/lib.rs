@@ -48,6 +48,19 @@ pub enum PoolError {
     /// the operator (which derives the root from the real on-chain commitments) to
     /// attest each new root. A forged root therefore cannot be installed.
     UnauthorizedRoot        = 9,
+    /// No AttestProtocol attestation exists for the supplied UID (or the
+    /// cross-contract get_attestation call failed). The caller has not been
+    /// KYC-attested by the authority.
+    KycAttestationMissing   = 10,
+    /// The attestation exists but does not match the expected KYC credential:
+    /// wrong attester (not the trusted authority), wrong schema, or the subject
+    /// is not the transacting wallet. Prevents presenting someone else's or an
+    /// unrelated attestation.
+    KycAttestationInvalid   = 11,
+    /// The attestation has been revoked by the authority.
+    KycAttestationRevoked   = 12,
+    /// The attestation's expiration_time has passed.
+    KycAttestationExpired   = 13,
 }
 
 #[contracttype]
@@ -57,6 +70,12 @@ pub enum DataKey {
     ComplianceVerifier,
     ShieldedVerifier,
     Registry,
+    // AttestProtocol contract address (on-chain KYC attestation store)
+    AttestProtocol,
+    // The trusted KYC authority address (attester of valid KYC attestations)
+    KycAuthority,
+    // The KYC schema UID attestations must follow
+    KycSchema,
     // Note-commitment tree: each slot stores one BytesN<32>
     Commitment(u32),
     // Spend nullifier set (shielded transfer/withdraw anti-double-spend)
@@ -107,6 +126,16 @@ mod shielded_verifier {
     );
 }
 
+// AttestProtocol — Stellar's on-chain attestation framework (EAS-equivalent).
+// The pool reads KYC attestations the issuer (KYC authority) has written here and
+// verifies attester / schema / subject / revocation / expiry on-chain (Tier C).
+// Vendored wasm provenance: contracts/external/README.md.
+mod attest_protocol {
+    soroban_sdk::contractimport!(
+        file = "../external/attest_protocol.wasm"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -128,6 +157,9 @@ impl ShieldedPool {
         corridor_id:          u32,
         initial_root:         BytesN<32>,
         operator_pubkey:      BytesN<32>,
+        attest_protocol:      Address,
+        kyc_authority:        Address,
+        kyc_schema:           BytesN<32>,
     ) {
         env.storage().instance().set(&DataKey::Admin,               &admin);
         env.storage().instance().set(&ASSET_KEY,                    &asset);
@@ -137,6 +169,9 @@ impl ShieldedPool {
         env.storage().instance().set(&CID_KEY,                      &corridor_id);
         env.storage().instance().set(&ROOT_KEY,                     &initial_root);
         env.storage().instance().set(&OPKEY_KEY,                    &operator_pubkey);
+        env.storage().instance().set(&DataKey::AttestProtocol,      &attest_protocol);
+        env.storage().instance().set(&DataKey::KycAuthority,        &kyc_authority);
+        env.storage().instance().set(&DataKey::KycSchema,           &kyc_schema);
         env.storage().instance().set(&NEXT_IDX,                     &0u32);
         env.storage().instance().extend_ttl(TTL_MIN, TTL_EXTEND);
     }
@@ -158,6 +193,21 @@ impl ShieldedPool {
     /// The ed25519 public key whose signature authorizes new Merkle roots.
     pub fn operator_pubkey(env: Env) -> BytesN<32> {
         env.storage().instance().get(&OPKEY_KEY).unwrap()
+    }
+
+    /// The AttestProtocol contract this pool reads KYC attestations from.
+    pub fn attest_protocol(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::AttestProtocol).unwrap()
+    }
+
+    /// The trusted KYC authority address (attester of valid KYC attestations).
+    pub fn kyc_authority(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::KycAuthority).unwrap()
+    }
+
+    /// The KYC schema UID that valid attestations must follow.
+    pub fn kyc_schema(env: Env) -> BytesN<32> {
+        env.storage().instance().get(&DataKey::KycSchema).unwrap()
     }
 
     /// Returns true if the spend nullifier has been recorded (note was spent).
@@ -332,6 +382,56 @@ impl ShieldedPool {
         Ok(())
     }
 
+    /// Verify, on-chain, that `subject` holds a valid KYC attestation identified
+    /// by `attestation_uid` in AttestProtocol (Tier C).
+    ///
+    /// This is the real-attestation gate: rather than trusting an off-chain KYC
+    /// flag or a hardcoded value, the pool performs a cross-contract
+    /// get_attestation() call into AttestProtocol and enforces every binding:
+    ///   - the attestation exists,
+    ///   - its `attester` is the trusted KYC authority configured at deploy,
+    ///   - its `schema_uid` is the configured KYC schema,
+    ///   - its `subject` is exactly the transacting wallet (who also require_auth'd),
+    ///   - it is not revoked,
+    ///   - it has not expired (expiration_time, if set, is in the future).
+    ///
+    /// Because `subject` is bound to the authenticated caller, a user cannot pass
+    /// off someone else's attestation; because `attester`/`schema` are pinned, a
+    /// self-issued or unrelated attestation is rejected.
+    fn verify_kyc_attestation(
+        env:             &Env,
+        subject:         &Address,
+        attestation_uid: &BytesN<32>,
+    ) -> Result<(), PoolError> {
+        let protocol_addr: Address =
+            env.storage().instance().get(&DataKey::AttestProtocol).unwrap();
+        let authority: Address =
+            env.storage().instance().get(&DataKey::KycAuthority).unwrap();
+        let schema: BytesN<32> =
+            env.storage().instance().get(&DataKey::KycSchema).unwrap();
+
+        let client = attest_protocol::Client::new(env, &protocol_addr);
+
+        // Cross-contract read. Any failure (not found, host error) => missing.
+        let att = client
+            .try_get_attestation(attestation_uid)
+            .map_err(|_| PoolError::KycAttestationMissing)?
+            .map_err(|_| PoolError::KycAttestationMissing)?;
+
+        if att.attester != authority || att.schema_uid != schema || &att.subject != subject {
+            return Err(PoolError::KycAttestationInvalid);
+        }
+        if att.revoked {
+            return Err(PoolError::KycAttestationRevoked);
+        }
+        if let Some(exp) = att.expiration_time {
+            if exp <= env.ledger().timestamp() {
+                return Err(PoolError::KycAttestationExpired);
+            }
+        }
+        Ok(())
+    }
+
     /// Record a spend nullifier. Fails (PoolError::NullifierSpent) if already present.
     fn mark_spend_nullifier(env: &Env, nullifier: &BytesN<32>) -> Result<(), PoolError> {
         let key = DataKey::SpendNullifier(nullifier.clone());
@@ -388,12 +488,18 @@ impl ShieldedPool {
         compliance_nullifier: BytesN<32>,
         compliance_proof:     Bytes,
         compliance_pub_signals: Bytes,
+        kyc_attestation_uid:  BytesN<32>,
     ) -> Result<(), PoolError> {
         depositor.require_auth();
 
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
         }
+
+        // Tier C: on-chain KYC gate. The depositor must hold a valid, non-revoked,
+        // unexpired AttestProtocol attestation issued by the trusted authority,
+        // with the depositor as subject.
+        Self::verify_kyc_attestation(&env, &depositor, &kyc_attestation_uid)?;
 
         // The new tree root must be attested by the operator (anti-forged-root).
         Self::assert_root_signed(&env, &new_root, &root_signature);
@@ -521,12 +627,18 @@ impl ShieldedPool {
         compliance_nullifier:     BytesN<32>,
         compliance_proof:         Bytes,
         compliance_pub_signals:   Bytes,
+        kyc_attestation_uid:      BytesN<32>,
     ) -> Result<(), PoolError> {
         recipient.require_auth();
 
         if amount <= 0 {
             return Err(PoolError::InvalidAmount);
         }
+
+        // Tier C: on-chain KYC gate at the off-ramp edge. The recipient must hold a
+        // valid, non-revoked, unexpired AttestProtocol attestation issued by the
+        // trusted authority, with the recipient as subject (PRD §6.2).
+        Self::verify_kyc_attestation(&env, &recipient, &kyc_attestation_uid)?;
 
         // The new tree root must be attested by the operator (anti-forged-root).
         Self::assert_root_signed(&env, &new_root, &root_signature);
@@ -604,5 +716,198 @@ impl ShieldedPool {
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         Self::require_admin(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — KYC attestation gate (Tier C)
+//
+// These exercise verify_kyc_attestation against a mock AttestProtocol contract
+// that returns the generated attest_protocol::Attestation type over a real
+// cross-contract call. They validate every rejection branch and the happy path.
+// The live protocol behaviour (BLS delegation, UID derivation) is validated
+// separately by the on-chain e2e (scripts + mock-issuer smoke test).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::attest_protocol::Attestation;
+    use soroban_sdk::{
+        contract, contractimpl, symbol_short,
+        testutils::{Address as _, Ledger as _},
+        Address, BytesN, Env, String as SorobanString,
+    };
+
+    const ATT_KEY: Symbol = symbol_short!("ATT");
+
+    /// Minimal mock that mimics AttestProtocol::get_attestation by returning a
+    /// stored Attestation. Returning the bare value matches the success wire
+    /// format of the real `Result<Attestation, Error>` signature.
+    #[contract]
+    struct MockAttest;
+
+    #[contractimpl]
+    impl MockAttest {
+        pub fn set_att(env: Env, att: Attestation) {
+            env.storage().instance().set(&ATT_KEY, &att);
+        }
+        pub fn clear(env: Env) {
+            env.storage().instance().remove(&ATT_KEY);
+        }
+        pub fn get_attestation(env: Env, _attestation_uid: BytesN<32>) -> Attestation {
+            // Panics (Err on the wire) when nothing stored => simulates "not found".
+            env.storage().instance().get(&ATT_KEY).unwrap()
+        }
+    }
+
+    struct Fixture {
+        env:       Env,
+        pool:      Address,
+        attest:    Address,
+        authority: Address,
+        schema:    BytesN<32>,
+        subject:   Address,
+        uid:       BytesN<32>,
+    }
+
+    fn setup() -> Fixture {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let attest = env.register(MockAttest, ());
+        let authority = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let schema = BytesN::from_array(&env, &[7u8; 32]);
+        let uid = BytesN::from_array(&env, &[9u8; 32]);
+
+        // Register the pool via its constructor (which only stores values; the
+        // dependency addresses below are never invoked by verify_kyc_attestation).
+        let admin = Address::generate(&env);
+        let asset = Address::generate(&env);
+        let cverifier = Address::generate(&env);
+        let sverifier = Address::generate(&env);
+        let registry = Address::generate(&env);
+        let zero_root = BytesN::from_array(&env, &[0u8; 32]);
+        let op_key = BytesN::from_array(&env, &[0u8; 32]);
+        let pool = env.register(
+            ShieldedPool,
+            (
+                admin,
+                asset,
+                cverifier,
+                sverifier,
+                registry,
+                1u32,
+                zero_root,
+                op_key,
+                attest.clone(),
+                authority.clone(),
+                schema.clone(),
+            ),
+        );
+
+        Fixture { env, pool, attest, authority, schema, subject, uid }
+    }
+
+    fn make_att(
+        f: &Fixture,
+        attester: &Address,
+        schema: &BytesN<32>,
+        subject: &Address,
+        revoked: bool,
+        expiration_time: Option<u64>,
+    ) -> Attestation {
+        Attestation {
+            uid:             f.uid.clone(),
+            schema_uid:      schema.clone(),
+            subject:         subject.clone(),
+            attester:        attester.clone(),
+            value:           SorobanString::from_str(&f.env, "{\"verified\":true}"),
+            nonce:           0,
+            timestamp:       0,
+            expiration_time,
+            revoked,
+            revocation_time: None,
+        }
+    }
+
+    fn store(f: &Fixture, att: &Attestation) {
+        let client = MockAttestClient::new(&f.env, &f.attest);
+        client.set_att(att);
+    }
+
+    fn run(f: &Fixture) -> Result<(), PoolError> {
+        f.env
+            .as_contract(&f.pool, || {
+                ShieldedPool::verify_kyc_attestation(&f.env, &f.subject, &f.uid)
+            })
+    }
+
+    #[test]
+    fn valid_attestation_passes() {
+        let f = setup();
+        let att = make_att(&f, &f.authority, &f.schema, &f.subject, false, None);
+        store(&f, &att);
+        assert_eq!(run(&f), Ok(()));
+    }
+
+    #[test]
+    fn valid_with_future_expiry_passes() {
+        let f = setup();
+        f.env.ledger().with_mut(|l| l.timestamp = 1_000);
+        let att = make_att(&f, &f.authority, &f.schema, &f.subject, false, Some(2_000));
+        store(&f, &att);
+        assert_eq!(run(&f), Ok(()));
+    }
+
+    #[test]
+    fn missing_attestation_rejected() {
+        let f = setup();
+        // Nothing stored in the mock => get_attestation panics => missing.
+        assert_eq!(run(&f), Err(PoolError::KycAttestationMissing));
+    }
+
+    #[test]
+    fn wrong_attester_rejected() {
+        let f = setup();
+        let imposter = Address::generate(&f.env);
+        let att = make_att(&f, &imposter, &f.schema, &f.subject, false, None);
+        store(&f, &att);
+        assert_eq!(run(&f), Err(PoolError::KycAttestationInvalid));
+    }
+
+    #[test]
+    fn wrong_schema_rejected() {
+        let f = setup();
+        let other_schema = BytesN::from_array(&f.env, &[1u8; 32]);
+        let att = make_att(&f, &f.authority, &other_schema, &f.subject, false, None);
+        store(&f, &att);
+        assert_eq!(run(&f), Err(PoolError::KycAttestationInvalid));
+    }
+
+    #[test]
+    fn wrong_subject_rejected() {
+        let f = setup();
+        let someone_else = Address::generate(&f.env);
+        let att = make_att(&f, &f.authority, &f.schema, &someone_else, false, None);
+        store(&f, &att);
+        assert_eq!(run(&f), Err(PoolError::KycAttestationInvalid));
+    }
+
+    #[test]
+    fn revoked_attestation_rejected() {
+        let f = setup();
+        let att = make_att(&f, &f.authority, &f.schema, &f.subject, true, None);
+        store(&f, &att);
+        assert_eq!(run(&f), Err(PoolError::KycAttestationRevoked));
+    }
+
+    #[test]
+    fn expired_attestation_rejected() {
+        let f = setup();
+        f.env.ledger().with_mut(|l| l.timestamp = 5_000);
+        let att = make_att(&f, &f.authority, &f.schema, &f.subject, false, Some(4_999));
+        store(&f, &att);
+        assert_eq!(run(&f), Err(PoolError::KycAttestationExpired));
     }
 }

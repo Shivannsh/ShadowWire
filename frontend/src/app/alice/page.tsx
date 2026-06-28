@@ -37,6 +37,8 @@ import {
 } from "@/lib/noteWallet";
 import type { ShieldedNote } from "@/lib/noteWallet";
 import { fundTestnetAccount, getClassicAssetBalance, buildAddTrustlineTx, hasTrustline } from "@/lib/stellar";
+import { KycBadge } from "@/components/KycBadge";
+import { ensureKycAttestation } from "@/lib/kyc";
 
 type Step = 1 | 2 | 3;
 
@@ -192,6 +194,10 @@ export default function AlicePage() {
         amount: BigInt(value), ownerField,
       });
 
+      // Tier C: ensure an on-chain AttestProtocol KYC attestation exists for the
+      // depositor (enrolling via the issuer if needed). The pool verifies it.
+      const kycAttestationUid = await ensureKycAttestation(address, "send", setStatus);
+
       setStatus("Building shielded deposit transaction...");
       const xdr = await buildDepositTx({
         depositor:            address,
@@ -201,6 +207,7 @@ export default function AlicePage() {
         rootSignature,
         complianceNullifier:  complianceProof.complianceNullifier,
         complianceProof,
+        kycAttestationUid,
       });
 
       setStatus("Sign in Freighter...");
@@ -394,6 +401,11 @@ export default function AlicePage() {
 
       {/* Cross-border corridor */}
       <CorridorBanner />
+
+      {/* On-chain KYC attestation (AttestProtocol) */}
+      {connected && address && (
+        <KycBadge address={address} side="send" onStatus={setStatus} />
+      )}
 
       {/* Flow */}
       <div>
