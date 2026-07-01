@@ -514,6 +514,9 @@ export default function SenderPage() {
               Shield into pool
             </Button>
           </div>
+          {statusType === "loading" && activeStep === 2 && (
+            <StepSpinner color="shield" label="Shielding funds…" detail={status} />
+          )}
         </FlowStep>
 
         <FlowStep step={3} title="Private ZK transfer"
@@ -559,6 +562,9 @@ export default function SenderPage() {
               </p>
             )}
           </div>
+          {statusType === "loading" && activeStep === 3 && (
+            <StepSpinner color="accent" label="Sending privately…" detail={status} />
+          )}
 
           {noteReceipt && (
             <div className={`mt-5 rounded-xl border p-4 ${noteSealed ? "border-shield/30 bg-shield/[0.06]" : "border-warn/40 bg-warn/[0.06]"}`}>
@@ -615,6 +621,22 @@ export default function SenderPage() {
             <ArrowUpRightIcon size={13} />
           </a>
         )}
+      </div>
+    </div>
+  );
+}
+
+function StepSpinner({ color, label, detail }: { color: "accent" | "shield"; label: string; detail?: string }) {
+  const ring = color === "shield" ? "text-shield border-shield/20 bg-shield/[0.06]" : "text-accent border-accent/20 bg-accent/[0.06]";
+  return (
+    <div className={`mt-4 flex items-center gap-3 rounded-xl border px-4 py-3 ${ring}`}>
+      <svg className="h-5 w-5 shrink-0 animate-spin" viewBox="0 0 24 24" fill="none">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+        <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      <div className="min-w-0">
+        <p className="text-sm font-medium">{label}</p>
+        {detail && <p className="truncate text-xs text-fg-faint">{detail}</p>}
       </div>
     </div>
   );

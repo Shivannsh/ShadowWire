@@ -32,3 +32,5 @@ contracts/**/test_snapshots/
 
 # Vendored AttestProtocol contract wasm must be tracked despite the *.wasm rule
 !contracts/external/*.wasm
+
+DEMO_SCRIPT.md
