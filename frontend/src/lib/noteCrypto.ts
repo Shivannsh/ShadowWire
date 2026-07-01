@@ -1,5 +1,5 @@
 /**
- * Note Crypto — authenticated, confidential note delivery (Buyer → Seller).
+ * Note Crypto, authenticated, confidential note delivery (Buyer → Seller).
  *
  * The previous channel was plaintext base64: anyone who intercepted the string
  * could read the note's `secretKey` and spend the note. Spend authority lives in
@@ -15,7 +15,7 @@
  *     ephemeral sender. Only the holder of the receiving secret key can open it.
  *
  * Why not encrypt directly to the Stellar (ed25519) key? Freighter never exposes
- * the account secret key — it only signs — so the recipient could never derive the
+ * the account secret key, it only signs, so the recipient could never derive the
  * decryption key. A dedicated receiving key sidesteps that and is the same pattern
  * used by viewing/incoming-viewing keys in Zcash, Railgun, and Tornado Nova.
  */
@@ -29,9 +29,9 @@ const RECEIVING_KEY_STORAGE = "shadowwire_receiving_key_v1";
 export const SEALED_NOTE_PREFIX = "SWNOTE1.";
 
 export interface ReceivingKeypair {
-  /** base64 X25519 public key — safe to share publicly. */
+  /** base64 X25519 public key, safe to share publicly. */
   publicKey: string;
-  /** base64 X25519 secret key — NEVER leaves the device. */
+  /** base64 X25519 secret key, NEVER leaves the device. */
   secretKey: string;
 }
 
@@ -42,7 +42,7 @@ export interface ReceivingKeypair {
 /**
  * Returns the device's persistent receiving keypair, creating one on first use.
  * The keypair lives in localStorage; clearing storage rotates it (any notes not
- * yet claimed against the old key would need to be re-sealed — see exportReceivingKey).
+ * yet claimed against the old key would need to be re-sealed, see exportReceivingKey).
  */
 export function getOrCreateReceivingKeypair(): ReceivingKeypair {
   if (typeof window === "undefined") {
@@ -103,7 +103,7 @@ export function importReceivingKey(serialized: string): ReceivingKeypair {
 export function sealNoteToRecipient(note: NoteReceipt, recipientPublicKeyB64: string): string {
   const recipientPub = decodeBase64(recipientPublicKeyB64.trim());
   if (recipientPub.length !== nacl.box.publicKeyLength) {
-    throw new Error("Invalid receiving key — expected a 32-byte X25519 public key");
+    throw new Error("Invalid receiving key, expected a 32-byte X25519 public key");
   }
   const ephemeral = nacl.box.keyPair();
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
@@ -142,8 +142,8 @@ export function openSealedNote(packageStr: string): NoteReceipt {
   const opened = nacl.box.open(ciphertext, nonce, ephemeralPub, decodeBase64(secretKey));
   if (!opened) {
     throw new Error(
-      "Could not decrypt — this note was sealed to a different receiving key. " +
-        "Make sure the Buyer used the receiving key shown on this device."
+      "Could not decrypt, this note was sealed to a different receiving key. " +
+        "Make sure the sender used the receiving key shown on this device."
     );
   }
   return JSON.parse(encodeUTF8(opened)) as NoteReceipt;

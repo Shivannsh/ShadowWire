@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 /**
- * ShadowWire mark: two offset shielded layers + a severed wire dot —
+ * ShadowWire mark: two offset shielded layers + a severed wire dot,
  * "a private wire behind a shield". Restrained, geometric, not a hacker glyph.
  */
 export function LogoMark({ size = 30 }: { size?: number }) {

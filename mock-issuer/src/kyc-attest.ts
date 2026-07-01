@@ -136,7 +136,10 @@ function loadDenylist(): Set<string> {
 
 export interface KycCheckResult { approved: boolean; reason?: string }
 
-export function runKycCheck(subject: string, opts: { tier: number; country: number }): KycCheckResult {
+export function runKycCheck(
+  subject: string,
+  opts: { tier: number; country: number; firstName?: string; lastName?: string; email?: string }
+): KycCheckResult {
   if (!subject.startsWith("G") || subject.length !== 56) {
     return { approved: false, reason: "invalid Stellar address" };
   }
@@ -145,6 +148,14 @@ export function runKycCheck(subject: string, opts: { tier: number; country: numb
   }
   if (opts.tier < 1) {
     return { approved: false, reason: "tier below minimum" };
+  }
+  if (opts.firstName !== undefined || opts.lastName !== undefined || opts.email !== undefined) {
+    if (!opts.firstName?.trim() || !opts.lastName?.trim() || !opts.email?.trim()) {
+      return { approved: false, reason: "first name, last name, and email are required" };
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(opts.email.trim())) {
+      return { approved: false, reason: "invalid email address" };
+    }
   }
   // NOTE: real identity verification (document + liveness + sanctions API) plugs
   // in here. The demo authority approves any non-denylisted, well-formed wallet.
@@ -406,7 +417,18 @@ export interface EnrollResult {
  * Issue a delegated KYC attestation about `subject`, signed by the authority's
  * BLS key, submitted (gas paid) by the dedicated submitter account.
  */
-export async function enrollKyc(subject: string, opts: { tier: number; country: number; side?: string; expiresDays?: number }): Promise<EnrollResult> {
+export async function enrollKyc(
+  subject: string,
+  opts: {
+    tier: number;
+    country: number;
+    side?: string;
+    expiresDays?: number;
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+  }
+): Promise<EnrollResult> {
   const cfg = loadAttestConfig();
   if (!cfg) throw new Error("AttestProtocol not configured");
 
@@ -465,6 +487,9 @@ export async function enrollKyc(subject: string, opts: { tier: number; country: 
   db[subject] = {
     subject, side: opts.side, uid: uid.toString("hex"), txHash,
     tier: opts.tier, country: opts.country, issuedAt: nowSec,
+    firstName: opts.firstName?.trim(),
+    lastName: opts.lastName?.trim(),
+    email: opts.email?.trim(),
   };
   saveDb(db);
 
@@ -564,14 +589,15 @@ export async function getKycStatus(address: string): Promise<KycStatus> {
     return { configured: true, address, verified: false, attester: cfg.authority, schemaUid: cfg.schemaUid.toString("hex") };
   }
 
-  // Verify it still exists + isn't revoked on-chain.
-  let onChain = false, revoked = false;
+  // Verify it still exists + isn't revoked on-chain. Fall back to the local
+  // issuer record when the SDK decode doesn't surface `revoked` reliably.
+  let onChain = false, revoked = rec.revoked === true;
   try {
     const client = makeClient(loadSubmitterKeypair().publicKey());
     const att = await client.getAttestation(Buffer.from(rec.uid, "hex"));
     const decoded = att?.result ?? att?.returnValue ?? att;
     onChain = !!decoded;
-    revoked = !!(decoded?.revoked);
+    if (decoded?.revoked === true) revoked = true;
   } catch { onChain = false; }
 
   return {

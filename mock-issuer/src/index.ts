@@ -111,6 +111,24 @@ function complianceKycInputs(side: KycSide) {
   };
 }
 
+/**
+ * Split a 32-byte attestation UID (hex) into two 16-byte field halves for the
+ * compliance circuit's `attestation_uid_hi`/`attestation_uid_lo` public inputs.
+ * The pool reconstructs the same halves from the on-chain UID and compares, so
+ * the ZK proof is cryptographically bound to the attestation it is gated by.
+ * Defaults to 0/0 when no UID is supplied (ungated/legacy callers).
+ */
+function attestationUidHalves(uidHex?: string): { hi: string; lo: string } {
+  const clean = String(uidHex ?? "").replace(/^0x/, "").toLowerCase();
+  if (clean.length === 0) return { hi: "0", lo: "0" };
+  if (clean.length !== 64 || /[^0-9a-f]/.test(clean)) {
+    throw new Error(`attestationUid must be 32-byte hex (got ${clean.length} chars)`);
+  }
+  const hi = BigInt("0x" + clean.slice(0, 32)).toString(10);  // top 16 bytes
+  const lo = BigInt("0x" + clean.slice(32, 64)).toString(10); // bottom 16 bytes
+  return { hi, lo };
+}
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -467,7 +485,9 @@ app.get("/api/corridor", (_req, res) => {
 // ---------------------------------------------------------------------------
 
 app.post("/api/prove/compliance", (req, res) => {
-  const { amount, ownerField } = req.body as { amount?: string; ownerField?: string };
+  const { amount, ownerField, attestationUid } = req.body as {
+    amount?: string; ownerField?: string; attestationUid?: string;
+  };
   if (!amount) { res.status(400).json({ error: "amount is required" }); return; }
 
   const depositorPubkey = ownerField ?? "1";
@@ -484,12 +504,16 @@ app.post("/api/prove/compliance", (req, res) => {
       kyc.corridor_id,
     );
 
-    // Step 2: generate the Groth16 proof with the nullifier as a public input.
+    // Step 2: generate the Groth16 proof with the nullifier + the attestation UID
+    // halves as public inputs (the latter binds the proof to the KYC attestation).
+    const { hi, lo } = attestationUidHalves(attestationUid);
     const inputs = {
       ...kyc,
       amount:               String(amount),
       depositor_pubkey:     depositorPubkey,
       compliance_nullifier: complianceNullifier,
+      attestation_uid_hi:   hi,
+      attestation_uid_lo:   lo,
     };
     const result = generateProof("compliance", inputs);
 
@@ -770,6 +794,9 @@ app.post("/api/prove/withdraw", async (req, res) => {
      *  Bob's note commitment is an OUTPUT commitment (different formula from input),
      *  so recomputation via computeNoteCommitment would produce the wrong value. */
     commitment?:  string;
+    /** Recipient's KYC attestation UID (hex). Bound into the off-ramp compliance
+     *  proof so the pool can tie the proof to the attestation it verifies. */
+    attestationUid?: string;
   };
 
   if (!body.ownerField || !body.value || !body.blinding || !body.secretKey || !body.recipient) {
@@ -980,11 +1007,14 @@ app.post("/api/prove/withdraw", async (req, res) => {
       outputValue1,
       withdrawKyc.corridor_id,
     );
+    const { hi: wHi, lo: wLo } = attestationUidHalves(body.attestationUid);
     const complianceInputs = {
       ...withdrawKyc,
       amount:               outputValue1,
       depositor_pubkey:     body.ownerField,
       compliance_nullifier: withdrawComplianceNullifier,
+      attestation_uid_hi:   wHi,
+      attestation_uid_lo:   wLo,
     };
     const complianceResult = generateProof("compliance", complianceInputs);
 
@@ -1104,12 +1134,19 @@ app.post("/api/kyc/enroll", async (req, res) => {
       return;
     }
     const side: KycSide = req.body?.side === "receive" ? "receive" : "send";
+    const firstName = String(req.body?.first_name ?? "").trim();
+    const lastName = String(req.body?.last_name ?? "").trim();
+    const email = String(req.body?.email_address ?? "").trim();
+    if (!firstName || !lastName || !email) {
+      res.status(400).json({ error: "first_name, last_name, and email_address are required" });
+      return;
+    }
     if (!loadAttestConfig()) {
       res.status(503).json({ error: "AttestProtocol not configured — run scripts/deploy-attest-protocol.mjs" });
       return;
     }
     const { tier, country } = sideKycAttributes(side);
-    const result = await enrollKyc(address, { tier, country, side });
+    const result = await enrollKyc(address, { tier, country, side, firstName, lastName, email });
     res.json({ ok: true, ...result });
   } catch (err: any) {
     console.error("KYC enroll failed:", err);

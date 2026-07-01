@@ -126,11 +126,11 @@ function hexToBytes(hex: string): Uint8Array {
 function fieldToBytes32(field: string): Uint8Array {
   const s = String(field).trim();
   const stripped = s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
-  // If the string contains a–f it is already hex — no BigInt conversion needed
+  // If the string contains a–f it is already hex - no BigInt conversion needed
   if (/[a-fA-F]/.test(stripped)) {
     return hexToBytes32(stripped.padStart(64, "0"));
   }
-  // Pure decimal field element — convert via BigInt
+  // Pure decimal field element - convert via BigInt
   return hexToBytes32(BigInt(s).toString(16).padStart(64, "0"));
 }
 
@@ -175,11 +175,12 @@ interface ComplianceProveResponse {
 }
 
 export async function generateComplianceProof(
-  input: DepositProofInput & { ownerField?: string }
+  input: DepositProofInput & { ownerField?: string; attestationUid?: string }
 ): Promise<ComplianceProofBundle> {
   const data = await post<ComplianceProveResponse>("/api/prove/compliance", {
-    amount:     input.amount.toString(),
-    ownerField: input.ownerField,
+    amount:         input.amount.toString(),
+    ownerField:     input.ownerField,
+    attestationUid: input.attestationUid,
   });
 
   return {
@@ -286,16 +287,17 @@ interface WithdrawProveResponse {
 }
 
 export async function generateWithdrawProof(
-  input: WithdrawProofInput
+  input: WithdrawProofInput & { attestationUid?: string }
 ): Promise<WithdrawProofBundle> {
   const data = await post<WithdrawProveResponse>("/api/prove/withdraw", {
-    ownerField:  input.ownerField,
-    value:       input.value,
-    assetId:     input.assetId ?? "3",
-    blinding:    input.blinding,
-    secretKey:   input.secretKey,
-    recipient:   input.recipient,
-    commitment:  input.commitment,
+    ownerField:     input.ownerField,
+    value:          input.value,
+    assetId:        input.assetId ?? "3",
+    blinding:       input.blinding,
+    secretKey:      input.secretKey,
+    recipient:      input.recipient,
+    commitment:     input.commitment,
+    attestationUid: input.attestationUid,
   });
 
   return {
@@ -357,7 +359,7 @@ export async function loadAttestationMetadata(): Promise<{
 
 import { isSealedNote, openSealedNote, sealNoteToRecipient } from "./noteCrypto";
 
-/** Legacy plaintext encoding — kept only for backward compatibility. */
+/** Legacy plaintext encoding, kept only for backward compatibility. */
 export function encodeNoteReceipt(note: NoteReceipt): string {
   return btoa(JSON.stringify(note));
 }
@@ -376,7 +378,7 @@ export function decodeNoteReceipt(encoded: string): NoteReceipt {
     return JSON.parse(atob(trimmed)) as NoteReceipt;
   } catch {
     throw new Error(
-      "Invalid note receipt — paste the sealed package (SWNOTE1.…) the Buyer sent you"
+      "Invalid note receipt, paste the sealed package (SWNOTE1.…) the sender sent you"
     );
   }
 }

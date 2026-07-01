@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { SpinnerIcon } from "./icons";
 
 /* ---------------------------------------------------------------- */
-/* Kicker — mono uppercase section label                             */
+/* Kicker - mono uppercase section label                             */
 /* ---------------------------------------------------------------- */
 export function Kicker({
   children,
@@ -22,7 +22,7 @@ export function Kicker({
 }
 
 /* ---------------------------------------------------------------- */
-/* Card — unified glass surface                                      */
+/* Card - unified glass surface                                      */
 /* ---------------------------------------------------------------- */
 export function Card({
   children,

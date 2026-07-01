@@ -16,8 +16,8 @@ import {
   CopyIcon,
   CheckIcon,
 } from "@/components/ui/icons";
-import { runSep24Deposit, openSep24Popup } from "@/lib/sep24";
-import { buildDepositTx, buildTransferTx, getPoolRoot, rootToHex } from "@/lib/pool";
+import { runSep24Deposit } from "@/lib/sep24";
+import { buildDepositTx, buildTransferTx, getPoolRoot, getPoolCommitmentCount, formatPoolRoot, rootToHex } from "@/lib/pool";
 import { submitTransaction } from "@/lib/transactions";
 import {
   generateComplianceProof,
@@ -38,17 +38,17 @@ import {
 import type { ShieldedNote } from "@/lib/noteWallet";
 import { fundTestnetAccount, getClassicAssetBalance, buildAddTrustlineTx, hasTrustline } from "@/lib/stellar";
 import { KycBadge } from "@/components/KycBadge";
-import { ensureKycAttestation } from "@/lib/kyc";
+import { ensureKycAttestation, uidBytesToHex, loadKycProfile } from "@/lib/kyc";
 
 type Step = 1 | 2 | 3;
 
 /** Parse any numeric string (including "9.0", "9.5") to a whole-number string.
- *  Noir circuits and BigInt() both require plain integers — no decimal point. */
+ *  Noir circuits and BigInt() both require plain integers, no decimal point. */
 function toIntStr(v: string): string {
   return String(Math.floor(parseFloat(v)));
 }
 
-export default function AlicePage() {
+export default function SenderPage() {
   const { address, connected, connect, sign, isCorrectNetwork } = useFreighter();
   const { addresses } = useTestnetAddresses();
 
@@ -57,9 +57,11 @@ export default function AlicePage() {
   const [statusType, setStatusType]   = useState<"idle" | "loading" | "success" | "error">("idle");
   const [srtBalance, setSrtBalance]   = useState("0");
   const [poolRoot, setPoolRoot]       = useState<string | null>(null);
+  const [poolNotes, setPoolNotes]       = useState<number | null>(null);
+  const [kycVerified, setKycVerified]   = useState(false);
   const [depositAmount, setDepositAmount] = useState("100");
   const [bobRecipientField, setBobRecipientField] = useState("");
-  const [sendAmount, setSendAmount]   = useState("90");
+  const [sendAmount, setSendAmount]   = useState("");
   const [txHash, setTxHash]           = useState<string | null>(null);
   const [noteReceipt, setNoteReceipt] = useState<string | null>(null);
   const [noteSealed, setNoteSealed]   = useState(false);
@@ -81,7 +83,14 @@ export default function AlicePage() {
   }, [address, assetCode, assetIssuer]);
 
   const refreshRoot = useCallback(async () => {
-    try { setPoolRoot(rootToHex(await getPoolRoot())); } catch { setPoolRoot(null); }
+    try {
+      const [root, count] = await Promise.all([getPoolRoot(), getPoolCommitmentCount()]);
+      setPoolRoot(rootToHex(root));
+      setPoolNotes(count);
+    } catch {
+      setPoolRoot(null);
+      setPoolNotes(null);
+    }
   }, []);
 
   const refreshNotes = useCallback(() => {
@@ -91,16 +100,28 @@ export default function AlicePage() {
     if (notes.length > 0 && !activeNote) setActiveNote(notes[0]);
   }, [poolAddress, address, activeNote]);
 
+  // Pre-fill recipient address from ?recipient=G… link (shared from the Recipient page).
   useEffect(() => {
-    if (addresses?.accounts?.bob) setBobRecipientField(addresses.accounts.bob);
-  }, [addresses?.accounts?.bob]);
+    if (typeof window === "undefined") return;
+    const recipient =
+      new URLSearchParams(window.location.search).get("recipient") ??
+      new URLSearchParams(window.location.search).get("seller");
+    if (recipient?.startsWith("G") && recipient.length === 56) {
+      setBobRecipientField(recipient);
+    }
+  }, []);
+
+  // Keep send amount in sync with the active shielded note.
+  useEffect(() => {
+    if (activeNote?.value) setSendAmount(activeNote.value);
+  }, [activeNote?.commitment, activeNote?.value]);
 
   // Update stale default status once wallet is connected (header + page share state)
   useEffect(() => {
     if (connected && address) {
       setStatus((prev) =>
         prev === "Connect Freighter to begin"
-          ? `Wallet connected — start with a SEP-24 deposit or shield existing SRT`
+          ? `Wallet connected, start with a SEP-24 deposit or shield existing SRT`
           : prev
       );
     }
@@ -140,15 +161,23 @@ export default function AlicePage() {
       const { submitTransaction } = await import("@/lib/transactions");
       await submitTransaction(signed);
       await refreshBalance();
-      setStatus(`${assetCode} trustline added — ready to receive from anchor`);
+      setStatus(`${assetCode} trustline added, ready to receive from anchor`);
     });
 
   const handleSep24Deposit = () => {
     if (!address) { setStatus("Connect wallet first"); setStatusType("error"); return; }
     if (!isCorrectNetwork) { setStatus("Switch Freighter to testnet"); setStatusType("error"); return; }
-    // Open the blank popup NOW while the click gesture is live — browsers block
-    // window.open() called from inside async callbacks.
-    const popup = openSep24Popup("about:blank");
+    if (!kycVerified) {
+      setStatus("Complete on-chain KYC first, verify your identity above");
+      setStatusType("error");
+      return;
+    }
+    const profile = loadKycProfile(address);
+    if (!profile) {
+      setStatus("KYC profile missing, re-verify your identity above");
+      setStatusType("error");
+      return;
+    }
     run(async () => {
       // Auto-add trustline if missing so the anchor can send SRT
       if (assetIssuer) {
@@ -161,11 +190,20 @@ export default function AlicePage() {
           const signed = await sign(xdr);
           const { submitTransaction } = await import("@/lib/transactions");
           await submitTransaction(signed);
-          setStatus("Trustline added — proceeding with SEP-24 deposit…");
+          setStatus("Trustline added, proceeding with SEP-24 deposit…");
         }
       }
+      // No popup needed — deposit is submitted headlessly to the anchor reference server.
       const { transaction } = await runSep24Deposit({
-        account: address, signXdr: sign, amount: depositAmount, onStatus: setStatus, popup,
+        account: address,
+        signXdr: sign,
+        amount: depositAmount,
+        customer: {
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          email: profile.email,
+        },
+        onStatus: setStatus,
       });
       if (transaction.amount_out) setDepositAmount(toIntStr(transaction.amount_out));
       setStatus(`SEP-24 deposit ${transaction.status}`);
@@ -189,14 +227,16 @@ export default function AlicePage() {
         ownerField, value, assetId: "3", blinding, secretKey,
       });
 
+      // Tier C: ensure an on-chain AttestProtocol KYC attestation exists for the
+      // depositor (enrolling via the issuer if needed). The pool verifies it AND
+      // binds the compliance proof to its UID, so we need it BEFORE proving.
+      const kycAttestationUid = await ensureKycAttestation(address, "send", setStatus);
+
       setStatus("Generating compliance proof for deposit amount...");
       const complianceProof = await generateComplianceProof({
         amount: BigInt(value), ownerField,
+        attestationUid: uidBytesToHex(kycAttestationUid),
       });
-
-      // Tier C: ensure an on-chain AttestProtocol KYC attestation exists for the
-      // depositor (enrolling via the issuer if needed). The pool verifies it.
-      const kycAttestationUid = await ensureKycAttestation(address, "send", setStatus);
 
       setStatus("Building shielded deposit transaction...");
       const xdr = await buildDepositTx({
@@ -229,6 +269,7 @@ export default function AlicePage() {
       };
       if (poolAddress) saveNote(poolAddress, note);
       setActiveNote(note);
+      setSendAmount(value);
       refreshNotes();
       await refreshRoot();
 
@@ -239,7 +280,9 @@ export default function AlicePage() {
   const handleSendPrivate = () =>
     run(async () => {
       if (!address || !activeNote) throw new Error("Shield funds first");
-      if (!bobRecipientField.trim()) throw new Error("Enter the Seller's recipient field");
+      if (!bobRecipientField.trim()) throw new Error("Enter the recipient's Stellar public key");
+
+      const amount = toIntStr(sendAmount.trim() || activeNote.value);
 
       setStatus("Loading real pool tree + computing Merkle path (tree_builder)...");
 
@@ -257,7 +300,7 @@ export default function AlicePage() {
         blinding:     activeNote.blinding,
         secretKey:    activeNote.secretKey,
         recipient:    recipientField,
-        outputValue:  sendAmount,
+        outputValue:  amount,
         fee:          "0",
       });
 
@@ -302,7 +345,7 @@ export default function AlicePage() {
         setNoteSealed(sealed);
 
         if (sealed && typeof window !== "undefined") {
-          const link = `${window.location.origin}/bob?note=${encodeURIComponent(receipt)}`;
+          const link = `${window.location.origin}/recipient?note=${encodeURIComponent(receipt)}`;
           setNoteDeepLink(link);
           try { setNoteQr(await toQrDataUrl(link)); } catch { setNoteQr(null); }
         } else {
@@ -312,8 +355,8 @@ export default function AlicePage() {
 
         setStatus(
           sealed
-            ? `Transfer confirmed. Sealed note ready — scan the QR or send the link to the Seller: ${result.hash.slice(0, 12)}...`
-            : `Transfer confirmed. ⚠ No receiving key — sending a PLAINTEXT receipt. Paste the Seller's receiving key to encrypt: ${result.hash.slice(0, 12)}...`
+            ? `Transfer confirmed. Sealed note ready, scan the QR or send the link to the recipient: ${result.hash.slice(0, 12)}...`
+            : `Transfer confirmed. ⚠ No receiving key, sending a PLAINTEXT receipt. Paste the recipient's receiving key to encrypt: ${result.hash.slice(0, 12)}...`
         );
       } else {
         setStatus(`Transfer confirmed: ${result.hash.slice(0, 12)}...`);
@@ -333,15 +376,16 @@ export default function AlicePage() {
       {/* Header */}
       <div className="mb-10">
         <Kicker icon={<SendIcon size={13} className="text-accent" />}>
-          Buyer · sender
+          Sender
         </Kicker>
         <h1 className="display mt-4 text-display-md text-balance">
-          Send privately,{" "}
-          <span className="serif-accent text-fg-soft">end to end.</span>
+          Send from bank to bank,{" "}
+          <span className="serif-accent text-fg-soft">privately.</span>
         </h1>
-        <p className="mt-3 max-w-xl text-fg-muted">
-          Deposit fiat via SEP-24, shield it with fresh note randomness, then
-          send a private transfer to the Seller.
+        <p className="mt-3 max-w-xl text-sm leading-relaxed text-fg-muted">
+          Deposit fiat through a SEP-24 anchor, pass the AttestProtocol KYC gate,
+          shield with a Groth16 compliance proof, then send a zero-knowledge
+          transfer to the recipient, amount hidden on-chain.
         </p>
       </div>
 
@@ -363,7 +407,7 @@ export default function AlicePage() {
         <div className="mb-6 grid gap-px overflow-hidden rounded-2xl border border-surface-border bg-surface-border sm:grid-cols-3">
           <Stat label="Account" value={`${address.slice(0, 10)}…`} tone="fg" />
           <Stat label={`${assetCode} balance`} value={srtBalance} tone="accent" />
-          <Stat label="Pool root" value={poolRoot ? `${poolRoot.slice(0, 14)}…` : "—"} tone="shield" small />
+          <Stat label="Pool root" value={formatPoolRoot(poolRoot, poolNotes)} tone="shield" small />
         </div>
       )}
 
@@ -404,13 +448,18 @@ export default function AlicePage() {
 
       {/* On-chain KYC attestation (AttestProtocol) */}
       {connected && address && (
-        <KycBadge address={address} side="send" onStatus={setStatus} />
+        <KycBadge
+          address={address}
+          side="send"
+          onStatus={setStatus}
+          onVerifiedChange={setKycVerified}
+        />
       )}
 
       {/* Flow */}
       <div>
-        <FlowStep step={1} title="SEP-24 deposit"
-          description="Interactive anchor flow — deposit fiat, receive SRT on Stellar."
+        <FlowStep step={1} title="Bank on-ramp (SEP-24)"
+          description="Deposit fiat through the regulated Stellar anchor. In production this is your bank's own interface, the anchor independently verifies the sending leg before crediting SRT."
           status={activeStep === 1 ? "active" : activeStep > 1 ? "done" : "pending"}>
           <FieldLabel label="Deposit amount" hint={assetCode}>
             <input type="text" value={depositAmount}
@@ -425,14 +474,36 @@ export default function AlicePage() {
             <Button variant="ghost" onClick={handleAddTrustline} disabled={!connected}>
               Add {assetCode} trustline
             </Button>
-            <Button onClick={handleSep24Deposit} disabled={!connected} icon={<GlobeIcon size={16} />}>
-              Open SEP-24 deposit
+            <Button onClick={handleSep24Deposit} disabled={!connected || !kycVerified} icon={<GlobeIcon size={16} />}>
+              Deposit via bank anchor
             </Button>
           </div>
+          {!kycVerified && connected && (
+            <p className="mt-3 text-xs text-fg-faint">
+              Complete on-chain KYC above first, the anchor gate requires it.
+            </p>
+          )}
+          {kycVerified && activeStep === 1 && statusType !== "loading" && (
+            <p className="mt-3 text-xs text-fg-faint">
+              Your KYC details are forwarded automatically — no form to fill. The anchor processes the deposit in the background.
+            </p>
+          )}
+          {statusType === "loading" && activeStep === 1 && (
+            <div className="mt-4 flex items-center gap-3 rounded-xl border border-accent/20 bg-accent/[0.06] px-4 py-3">
+              <svg className="h-5 w-5 shrink-0 animate-spin text-accent" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-accent">Processing deposit…</p>
+                <p className="truncate text-xs text-fg-faint">{status}</p>
+              </div>
+            </div>
+          )}
         </FlowStep>
 
-        <FlowStep step={2} title="Shield funds"
-          description="Fresh note randomness and a compliance proof for the exact deposited amount."
+        <FlowStep step={2} title="KYC gate + shield"
+          description="AttestProtocol verifies your on-chain KYC attestation. A Groth16 compliance proof binds to it and the deposit amount, then funds enter the shielded pool."
           status={activeStep === 2 ? "active" : activeStep > 2 ? "done" : "pending"}>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
             <p className="text-sm text-fg-soft">
@@ -445,28 +516,32 @@ export default function AlicePage() {
           </div>
         </FlowStep>
 
-        <FlowStep step={3} title="Send privately"
-          description="Real Merkle path from chain — the proof is generated against live pool state."
+        <FlowStep step={3} title="Private ZK transfer"
+          description="Groth16 shielded-transfer proof against live pool state, only a nullifier and new commitment hit the chain. Amount and parties stay hidden."
           status={activeStep === 3 ? "active" : "pending"}
           last>
           <div className="space-y-4">
-            <FieldLabel label="Seller recipient" hint="Stellar address or pool field ID">
+            <FieldLabel label="Recipient's Stellar public key" hint="Freighter G-address">
               <input type="text" value={bobRecipientField}
                 onChange={(e) => setBobRecipientField(e.target.value)}
-                placeholder="G… or pool Field ID"
-                className="field" />
+                placeholder="G… (copy from Recipient page)"
+                className="field num text-xs" />
             </FieldLabel>
-            <FieldLabel label="Seller receiving key" hint="encrypts the note — get it from the Seller">
+            <p className="text-xs text-fg-faint">
+              The recipient&apos;s visible Stellar account, the same address they connect with on the Recipient page.
+              Ask them to copy it from &ldquo;Share with sender&rdquo; there. It is converted to a pool field internally; do not paste a pool field ID here.
+            </p>
+            <FieldLabel label="Recipient receiving key" hint="encrypts the note, get it from the recipient">
               <input type="text" value={receivingKey}
                 onChange={(e) => setReceivingKey(e.target.value)}
-                placeholder="Paste the Seller's receiving key (base64) to seal the note"
+                placeholder="Paste the recipient's receiving key (base64) to seal the note"
                 className="field num text-xs" />
             </FieldLabel>
             <div className="flex flex-wrap items-end gap-3">
               <FieldLabel label="Amount to send" hint={assetCode}>
                 <input type="text" value={sendAmount}
                   onChange={(e) => setSendAmount(e.target.value)}
-                  placeholder="Amount"
+                  placeholder={activeNote?.value ?? "Amount"}
                   className="field max-w-40" />
               </FieldLabel>
               <Button onClick={handleSendPrivate}
@@ -475,6 +550,14 @@ export default function AlicePage() {
                 Send privately
               </Button>
             </div>
+            {activeNote && (
+              <p className="text-xs text-fg-faint">
+                From your shielded note: <span className="num font-medium text-accent">{activeNote.value} {assetCode}</span>
+                {sendAmount !== activeNote.value && sendAmount && (
+                  <span>, sending {sendAmount} {assetCode}</span>
+                )}
+              </p>
+            )}
           </div>
 
           {noteReceipt && (
@@ -482,7 +565,7 @@ export default function AlicePage() {
               <div className="mb-2 flex items-center justify-between">
                 <p className="kicker" style={{ color: noteSealed ? "#46d6a6" : "#f0b429" }}>
                   <ShieldIcon size={13} />
-                  {noteSealed ? "Sealed note — only the Seller can open it" : "⚠ Plaintext receipt — anyone can spend it"}
+                  {noteSealed ? "Sealed note, only the recipient can open it" : "⚠ Plaintext receipt, anyone can spend it"}
                 </p>
                 <button onClick={copyReceipt} className="btn btn-ghost px-2.5 py-1.5 text-xs">
                   {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
@@ -513,8 +596,8 @@ export default function AlicePage() {
 
               <p className="mt-3 text-xs text-fg-faint">
                 {noteSealed
-                  ? "The note is encrypted to the Seller's receiving key (X25519 + XSalsa20-Poly1305). Even if intercepted, only the Seller can decrypt and spend it."
-                  : "No receiving key was provided, so this receipt is unencrypted — treat it like cash. Paste the Seller's receiving key above before sending to encrypt it."}
+                  ? "The note is encrypted to the recipient's receiving key (X25519 + XSalsa20-Poly1305). Even if intercepted, only the recipient can decrypt and spend it."
+                  : "No receiving key was provided, so this receipt is unencrypted, treat it like cash. Paste the recipient's receiving key above before sending to encrypt it."}
               </p>
             </div>
           )}

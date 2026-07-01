@@ -1,5 +1,5 @@
 /**
- * Note Wallet — browser-side note storage for the ShadowWire shielded pool.
+ * Note Wallet, browser-side note storage for the ShadowWire shielded pool.
  *
  * A "note" is a private UTXO in the shielded pool:
  *   { owner, value, assetId, blinding, secretKey, commitment }

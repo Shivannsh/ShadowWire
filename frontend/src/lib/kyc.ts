@@ -18,6 +18,34 @@ export const POOL_KYC_ATTEST =
 
 export type KycSide = "send" | "receive";
 
+/** Off-chain identity collected before issuing an AttestProtocol credential. */
+export interface KycProfile {
+  firstName: string;
+  lastName: string;
+  email: string;
+}
+
+function profileKey(address: string): string {
+  return `shadowwire-kyc-${address}`;
+}
+
+export function loadKycProfile(address: string): KycProfile | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(profileKey(address));
+    if (!raw) return null;
+    const p = JSON.parse(raw) as KycProfile;
+    if (!p.firstName?.trim() || !p.lastName?.trim() || !p.email?.trim()) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+export function saveKycProfile(address: string, profile: KycProfile): void {
+  localStorage.setItem(profileKey(address), JSON.stringify(profile));
+}
+
 export interface KycConfig {
   configured: boolean;
   provider?: string;
@@ -69,16 +97,47 @@ export async function getKycStatus(address: string): Promise<KycStatus> {
 
 export async function enrollKyc(
   address: string,
-  side: KycSide
+  side: KycSide,
+  profile: KycProfile
 ): Promise<KycEnrollResult> {
+  saveKycProfile(address, profile);
   const res = await fetch(`${ISSUER_URL}/api/kyc/enroll`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address, side }),
+    body: JSON.stringify({
+      address,
+      side,
+      first_name: profile.firstName.trim(),
+      last_name: profile.lastName.trim(),
+      email_address: profile.email.trim(),
+    }),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`POST /api/kyc/enroll failed (${res.status}): ${text}`);
   return JSON.parse(text);
+}
+
+export async function revokeKyc(address: string): Promise<{ attestationUid: string; txHash?: string }> {
+  const res = await fetch(`${ISSUER_URL}/api/kyc/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ address }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`POST /api/kyc/revoke failed (${res.status}): ${text}`);
+  return JSON.parse(text);
+}
+
+export function clearKycProfile(address: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(profileKey(address));
+}
+
+/** Convert a 32-byte attestation UID to lowercase hex (no 0x prefix). The issuer
+ *  needs the hex form to split the UID into the compliance proof's public inputs. */
+export function uidBytesToHex(uid?: Uint8Array): string | undefined {
+  if (!uid) return undefined;
+  return Array.from(uid).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** Convert a hex attestation UID (with/without 0x) to a 32-byte Uint8Array. */
@@ -110,8 +169,7 @@ export async function ensureKycAttestation(
     return uidToBytes(status.attestationUid);
   }
 
-  onStatus?.("Issuing on-chain KYC attestation (AttestProtocol delegated attest)…");
-  const result = await enrollKyc(address, side);
-  onStatus?.(`KYC attested on-chain: ${result.attestationUid.slice(0, 16)}…`);
-  return uidToBytes(result.attestationUid);
+  throw new Error(
+    "Complete on-chain KYC first, fill in your identity details in the KYC panel above."
+  );
 }

@@ -85,6 +85,21 @@ export async function getPoolRoot(): Promise<Uint8Array> {
   return new Uint8Array(root);
 }
 
+export async function getPoolCommitmentCount(): Promise<number> {
+  const contractId = await requirePoolContract();
+  return readContract<number>(contractId, "commitment_count");
+}
+
+/** Human-readable pool root, all-zero is the empty-tree initial state, not an error. */
+export function formatPoolRoot(hex: string | null, noteCount?: number | null): string {
+  if (!hex) return "...";
+  const notes = noteCount ?? 0;
+  if (/^0+$/.test(hex)) {
+    return notes === 0 ? "Empty pool · 0 notes" : `Initial · ${notes} notes`;
+  }
+  return `${hex.slice(0, 14)}… · ${notes} notes`;
+}
+
 export async function isNullifierSpent(nullifier: Uint8Array): Promise<boolean> {
   const contractId = await requirePoolContract();
   return readContract<boolean>(contractId, "is_nullifier_spent", [
@@ -109,7 +124,7 @@ export interface DepositParams {
 /**
  * Build a deposit() transaction.
  *
- * amount is a raw integer string — the same value used in the compliance proof
+ * amount is a raw integer string, the same value used in the compliance proof
  * and the shielded note.  Do NOT convert to stroops here; the compliance circuit
  * uses this exact value for its amount signal, and the contract's AmountMismatch
  * check compares signal[4] against the i128 passed to deposit().  Both must be
@@ -172,7 +187,7 @@ export async function buildTransferTx(params: TransferParams): Promise<string> {
 
 export interface WithdrawParams {
   recipient:      string;
-  /** Raw integer string — same unit as the compliance and shielded proofs */
+  /** Raw integer string, same unit as the compliance and shielded proofs */
   amount:         string;
   nullifier:      Uint8Array;
   newRoot:        Uint8Array;
@@ -191,13 +206,13 @@ export interface WithdrawParams {
  * The updated contract now requires BOTH a shielded spend proof AND an
  * off-ramp compliance proof (mirroring the on-ramp compliance gate on deposit).
  *
- * amount is a raw integer string — the same unit used in both proofs and the
+ * amount is a raw integer string, the same unit used in both proofs and the
  * note value.  Do NOT convert to stroops; the compliance and shielded
  * signals must equal the i128 passed to the contract.
  */
 export async function buildWithdrawTx(params: WithdrawParams): Promise<string> {
   const contractId = await requirePoolContract();
-  // Raw amount — same unit as the proof signals
+  // Raw amount - same unit as the proof signals
   const amount = BigInt(params.amount);
 
   return invokeContract(params.recipient, contractId, "withdraw", [

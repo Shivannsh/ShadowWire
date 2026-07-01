@@ -27,7 +27,7 @@ export function CorridorBanner() {
     <div className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-surface-border bg-ink-850/50 px-4 py-3">
       <span className="kicker" style={{ color: "#5bc8ec" }}>
         <GlobeIcon size={13} />
-        Corridor {corridor.id}
+        Cross-border corridor
       </span>
       {isRegistry ? (
         <span className="flex items-center gap-2 text-sm">
@@ -35,12 +35,12 @@ export function CorridorBanner() {
           <ArrowRightIcon size={14} className="text-fg-faint" />
           <span className="font-semibold text-fg">{corridor.receiving.country}</span>
           <span className="ml-1 rounded-md bg-shield/15 px-1.5 py-0.5 text-[11px] font-medium text-shield">
-            per-user KYC
+            AttestProtocol KYC per edge
           </span>
         </span>
       ) : (
         <span className="flex items-center gap-2 text-sm text-fg-muted">
-          Demo KYC — single shared jurisdiction
+          Demo KYC, single shared jurisdiction
           <span className="rounded-md bg-warn/15 px-1.5 py-0.5 text-[11px] font-medium text-warn">
             set KYC_MODE=registry for cross-border
           </span>

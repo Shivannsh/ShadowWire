@@ -14,10 +14,11 @@ import {
   GlobeIcon,
   CopyIcon,
   CheckIcon,
+  SendIcon,
 } from "@/components/ui/icons";
 import { getReceivingPublicKey } from "@/lib/noteCrypto";
 import { toQrDataUrl } from "@/lib/qr";
-import { buildWithdrawTx, getPoolRoot, rootToHex } from "@/lib/pool";
+import { buildWithdrawTx, getPoolRoot, getPoolCommitmentCount, formatPoolRoot, rootToHex } from "@/lib/pool";
 import { submitTransaction } from "@/lib/transactions";
 import { generateWithdrawProof, decodeNoteReceipt } from "@/lib/proofs";
 import type { NoteReceipt, WithdrawProofBundle } from "@/lib/proofs";
@@ -33,11 +34,11 @@ import {
   getClassicAssetBalance,
   hasTrustline,
 } from "@/lib/stellar";
-import { runSep24Withdraw, openSep24Popup } from "@/lib/sep24";
+import { runSep24Withdraw, reserveSep24Popup } from "@/lib/sep24";
 import { KycBadge } from "@/components/KycBadge";
-import { ensureKycAttestation } from "@/lib/kyc";
+import { ensureKycAttestation, uidBytesToHex, loadKycProfile } from "@/lib/kyc";
 
-export default function BobPage() {
+export default function RecipientPage() {
   const { address, connected, connect, sign, isCorrectNetwork } = useFreighter();
   const { addresses } = useTestnetAddresses();
 
@@ -49,11 +50,15 @@ export default function BobPage() {
   const [myNotes, setMyNotes]         = useState<ShieldedNote[]>([]);
   const [srtBalance, setSrtBalance]   = useState("0");
   const [poolRoot, setPoolRoot]       = useState<string | null>(null);
+  const [poolNotes, setPoolNotes]     = useState<number | null>(null);
+  const [kycVerified, setKycVerified] = useState(false);
   const [txHash, setTxHash]           = useState<string | null>(null);
   const [withdrawAddr, setWithdrawAddr] = useState("");
   const [receivingPubKey, setReceivingPubKey] = useState("");
   const [receivingQr, setReceivingQr] = useState<string | null>(null);
   const [keyCopied, setKeyCopied]     = useState(false);
+  const [addrCopied, setAddrCopied]   = useState(false);
+  const [senderLinkCopied, setSenderLinkCopied] = useState(false);
 
   const poolAddress = addresses?.contracts?.shielded_pool ?? "";
   const assetCode   = addresses?.anchor?.asset_code   ?? "SRT";
@@ -66,7 +71,14 @@ export default function BobPage() {
   }, [address, assetCode, assetIssuer]);
 
   const refreshRoot = useCallback(async () => {
-    try { setPoolRoot(rootToHex(await getPoolRoot())); } catch { setPoolRoot(null); }
+    try {
+      const [root, count] = await Promise.all([getPoolRoot(), getPoolCommitmentCount()]);
+      setPoolRoot(rootToHex(root));
+      setPoolNotes(count);
+    } catch {
+      setPoolRoot(null);
+      setPoolNotes(null);
+    }
   }, []);
 
   const refreshNotes = useCallback(() => {
@@ -86,7 +98,7 @@ export default function BobPage() {
     toQrDataUrl(pub).then(setReceivingQr).catch(() => setReceivingQr(null));
   }, []);
 
-  // Support claim deep links: /bob?note=SWNOTE1.… prefills the sealed package.
+  // Support claim deep links: /recipient?note=SWNOTE1.… prefills the sealed package.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const note = new URLSearchParams(window.location.search).get("note");
@@ -101,11 +113,28 @@ export default function BobPage() {
     });
   };
 
+  const copyStellarAddress = () => {
+    if (!address) return;
+    navigator.clipboard?.writeText(address).then(() => {
+      setAddrCopied(true);
+      setTimeout(() => setAddrCopied(false), 1600);
+    });
+  };
+
+  const copySenderLink = () => {
+    if (!address || typeof window === "undefined") return;
+    const link = `${window.location.origin}/sender?recipient=${encodeURIComponent(address)}`;
+    navigator.clipboard?.writeText(link).then(() => {
+      setSenderLinkCopied(true);
+      setTimeout(() => setSenderLinkCopied(false), 1600);
+    });
+  };
+
   useEffect(() => {
     if (connected && address) {
       setStatus((prev) =>
         prev === "Connect Freighter to begin"
-          ? `Wallet connected — paste the Buyer's note receipt to claim`
+          ? `Wallet connected, paste the sender's note receipt to claim`
           : prev
       );
     }
@@ -140,14 +169,14 @@ export default function BobPage() {
   // Step 1: Decode the note receipt the Buyer sent
   const handleClaimNote = () =>
     run(async () => {
-      if (!noteInput.trim()) throw new Error("Paste the note receipt from the Buyer");
+      if (!noteInput.trim()) throw new Error("Paste the note receipt from the sender");
 
       const receipt: NoteReceipt = decodeNoteReceipt(noteInput.trim());
 
       // The note's owner field MUST stay exactly as the Buyer computed it: the
       // on-chain commitment is note_commitment(owner, value, asset, blinding),
       // so overriding owner with the Seller's own address field would make the
-      // stored note inconsistent — the spend proof could never reproduce the
+      // stored note inconsistent - the spend proof could never reproduce the
       // on-chain leaf and the Merkle root would never match. Spend authority
       // comes from note_secret_key (in the receipt), not from owner_pubkey, so
       // the Seller can spend a note owned by any field as long as they hold its
@@ -186,6 +215,11 @@ export default function BobPage() {
       // is a separate parameter passed to buildWithdrawTx below.
       const ourField = await addressToField(address);
 
+      // Tier C: ensure an on-chain AttestProtocol KYC attestation exists for the
+      // recipient at the off-ramp edge (enrolling via the issuer if needed). Needed
+      // BEFORE proving so the off-ramp compliance proof is bound to its UID.
+      const kycAttestationUid = await ensureKycAttestation(address, "receive", setStatus);
+
       setStatus("Loading pool tree + building real Merkle path (tree_builder)...");
       setStatus(
         "Generating shielded spend proof + off-ramp compliance proof (two Groth16 proofs)..."
@@ -198,11 +232,8 @@ export default function BobPage() {
         secretKey:   activeNote.secretKey,
         recipient:   ourField,
         commitment:  activeNote.commitment,
+        attestationUid: uidBytesToHex(kycAttestationUid),
       });
-
-      // Tier C: ensure an on-chain AttestProtocol KYC attestation exists for the
-      // recipient at the off-ramp edge (enrolling via the issuer if needed).
-      const kycAttestationUid = await ensureKycAttestation(address, "receive", setStatus);
 
       setStatus("Building withdraw transaction (shielded + compliance proofs on-chain)...");
       const xdr = await buildWithdrawTx({
@@ -227,7 +258,7 @@ export default function BobPage() {
       await refreshBalance();
       await refreshRoot();
 
-      setStatus(`Withdraw confirmed — both proofs verified on-chain: ${result.hash.slice(0, 12)}...`);
+      setStatus(`Withdraw confirmed, both proofs verified on-chain: ${result.hash.slice(0, 12)}...`);
       setActiveStep(3);
     });
 
@@ -235,26 +266,52 @@ export default function BobPage() {
   const handleSep24Withdraw = () => {
     if (!address) { setStatus("Connect wallet"); setStatusType("error"); return; }
     if (!isCorrectNetwork) { setStatus("Switch Freighter to testnet"); setStatusType("error"); return; }
-    // Open blank popup NOW while the click gesture is live (avoids popup blocker)
-    const popup = openSep24Popup("about:blank");
+    if (!kycVerified) {
+      setStatus("Complete on-chain KYC first, verify your identity above");
+      setStatusType("error");
+      return;
+    }
+    const profile = loadKycProfile(address);
+    if (!profile) {
+      setStatus("KYC profile missing, re-verify your identity above");
+      setStatusType("error");
+      return;
+    }
+    // Reserve the popup slot synchronously (during the user-gesture) so the
+    // browser won't block it. It stays 1×1 off-screen until Freighter signs.
+    const reservedPopup = reserveSep24Popup();
     run(async () => {
       await ensureSrtTrustline();
       await refreshBalance();
       const bal = await getClassicAssetBalance(address, assetCode, assetIssuer);
       if (parseFloat(bal) <= 0) {
         throw new Error(
-          `No ${assetCode} in wallet (balance: ${bal}). Complete Step 2 "Withdraw privately" first — ` +
+          `No ${assetCode} in wallet (balance: ${bal}). Complete Step 2 "Withdraw privately" first, ` +
           `the pool must pay out SRT before SEP-24 off-ramp.`
         );
       }
-      await runSep24Withdraw({
-        account: address, signXdr: sign,
+      const result = await runSep24Withdraw({
+        account: address,
+        signXdr: sign,
         amount: activeNote?.value ?? bal,
+        customer: {
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          email: profile.email,
+        },
         onStatus: setStatus,
-        popup,
+        reservedPopup,
       });
       await refreshBalance();
-      setStatus("SEP-24 off-ramp withdrawal completed");
+      if (result.anchorPending) {
+        setStatus(
+          result.paymentHash
+            ? `Off-ramp payment sent (${result.paymentHash.slice(0, 12)}…). Testnet anchor is still crediting fiat, no further wallet action needed.`
+            : "Off-ramp payment sent. Testnet anchor is still crediting fiat, no further wallet action needed."
+        );
+      } else {
+        setStatus("SEP-24 off-ramp withdrawal completed");
+      }
     });
   };
 
@@ -263,15 +320,16 @@ export default function BobPage() {
       {/* Header */}
       <div className="mb-10">
         <Kicker icon={<DownloadIcon size={13} className="text-shield" />}>
-          Seller · recipient
+          Recipient
         </Kicker>
         <h1 className="display mt-4 text-display-md text-balance">
           Claim and cash out,{" "}
-          <span className="serif-accent text-fg-soft">on your terms.</span>
+          <span className="serif-accent text-fg-soft">through the bank.</span>
         </h1>
-        <p className="mt-3 max-w-xl text-fg-muted">
-          Receive the Buyer&apos;s note receipt, generate a spend proof, withdraw
-          from the pool, then off-ramp to fiat via SEP-24.
+        <p className="mt-3 max-w-xl text-sm leading-relaxed text-fg-muted">
+          Decrypt the sender&apos;s sealed note, pass the AttestProtocol KYC gate
+          with a spend proof, withdraw from the shielded pool, then off-ramp to
+          fiat via SEP-24, the receiving country&apos;s regulated edge.
         </p>
       </div>
 
@@ -294,17 +352,46 @@ export default function BobPage() {
         <div className="mb-6 grid gap-px overflow-hidden rounded-2xl border border-surface-border bg-surface-border sm:grid-cols-3">
           <Stat label="Account" value={`${address.slice(0, 10)}…`} tone="fg" />
           <Stat label={`${assetCode} balance`} value={srtBalance} tone="shield" />
-          <Stat label="Pool root" value={poolRoot ? `${poolRoot.slice(0, 14)}…` : "—"} tone="accent" small />
+          <Stat label="Pool root" value={formatPoolRoot(poolRoot, poolNotes)} tone="accent" small />
         </div>
       )}
 
-      {/* Receiving key — share with the Buyer so they can seal the note to you */}
+      {/* Share with sender, Stellar address for the private transfer */}
+      {connected && address && (
+        <div className="mb-6 rounded-2xl border border-accent/25 bg-accent/[0.06] p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="kicker text-accent">
+              <SendIcon size={13} />
+              Share with sender
+            </p>
+            <div className="flex gap-2">
+              <button onClick={copyStellarAddress} className="btn btn-ghost px-2.5 py-1.5 text-xs">
+                {addrCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+                {addrCopied ? "Copied" : "Copy address"}
+              </button>
+              <button onClick={copySenderLink} className="btn btn-ghost px-2.5 py-1.5 text-xs">
+                {senderLinkCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+                {senderLinkCopied ? "Copied" : "Copy sender link"}
+              </button>
+            </div>
+          </div>
+          <input readOnly value={address}
+            onClick={(e) => (e.target as HTMLInputElement).select()}
+            className="field num w-full text-xs" />
+          <p className="mt-2 text-xs text-fg-faint">
+            The sender pastes this Stellar public key in step 3 as &ldquo;Recipient&apos;s Stellar public key&rdquo;.
+            Or send them the sender link, it pre-fills this address on the Sender page.
+          </p>
+        </div>
+      )}
+
+      {/* Receiving key, share with the sender so they can seal the note to you */}
       {connected && (
         <div className="mb-8 rounded-2xl border border-shield/25 bg-shield/[0.06] p-4">
           <div className="mb-2 flex items-center justify-between">
             <p className="kicker" style={{ color: "#46d6a6" }}>
               <ShieldIcon size={13} />
-              Your receiving key — send to the Buyer
+              Your receiving key, send to the sender
             </p>
             <button onClick={copyReceivingKey} className="btn btn-ghost px-2.5 py-1.5 text-xs">
               {keyCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
@@ -323,7 +410,7 @@ export default function BobPage() {
             )}
           </div>
           <p className="mt-2 text-xs text-fg-faint">
-            The Buyer encrypts your note to this key. Only this device can decrypt it —
+            The sender encrypts your note to this key. Only this device can decrypt it,
             keep it if you clear browser storage.
           </p>
         </div>
@@ -366,19 +453,24 @@ export default function BobPage() {
 
       {/* On-chain KYC attestation (AttestProtocol) */}
       {connected && address && (
-        <KycBadge address={address} side="receive" onStatus={setStatus} />
+        <KycBadge
+          address={address}
+          side="receive"
+          onStatus={setStatus}
+          onVerifiedChange={setKycVerified}
+        />
       )}
 
       {/* Flow */}
       <div>
-        <FlowStep step={1} title="Claim note"
-          description="Paste the sealed note (SWNOTE1.…) the Buyer sent, or open their claim link."
+        <FlowStep step={1} title="Claim sealed note"
+          description="Paste the encrypted note receipt (SWNOTE1.…) from the sender, or open their claim link. Only your receiving key can decrypt it."
           status={activeStep === 1 ? "active" : activeStep > 1 ? "done" : "pending"}>
           <FieldLabel label="Note receipt" hint="sealed (SWNOTE1.…) or legacy base64">
             <textarea
               value={noteInput}
               onChange={(e) => setNoteInput(e.target.value)}
-              placeholder="Paste the sealed note package from the Buyer…"
+              placeholder="Paste the sealed note package from the sender…"
               rows={3}
               className="field num resize-none text-xs"
             />
@@ -390,8 +482,8 @@ export default function BobPage() {
           </div>
         </FlowStep>
 
-        <FlowStep step={2} title="Withdraw from pool"
-          description="Shielded spend proof and off-ramp compliance proof — both verified on-chain."
+        <FlowStep step={2} title="KYC gate + withdraw"
+          description="AttestProtocol verifies your receiving-edge KYC attestation. ZK spend + compliance proofs unlock funds from the shielded pool to your visible balance."
           status={activeStep === 2 ? "active" : activeStep > 2 ? "done" : "pending"}>
           {activeNote && (
             <div className="mb-4 flex items-center gap-3 rounded-xl border border-shield/30 bg-shield/[0.06] px-3.5 py-2.5 text-sm">
@@ -415,14 +507,19 @@ export default function BobPage() {
           </div>
         </FlowStep>
 
-        <FlowStep step={3} title="SEP-24 off-ramp"
-          description="Convert SRT back to fiat through the anchor."
+        <FlowStep step={3} title="Bank off-ramp (SEP-24)"
+          description="The receiving bank's interface handles the final fiat payout. In production this is the recipient's bank app, the anchor independently verifies the off-ramp leg before releasing funds."
           status={activeStep === 3 ? "active" : "pending"}
           last>
+          {activeStep === 3 && (
+            <p className="mb-3 text-xs text-fg-faint">
+              Your KYC details are forwarded automatically, no form to fill. The anchor processes the payout in the background.
+            </p>
+          )}
           <Button onClick={handleSep24Withdraw}
             disabled={!connected || activeStep < 3}
             icon={<GlobeIcon size={16} />}>
-            Open SEP-24 off-ramp
+            Withdraw via bank anchor
           </Button>
         </FlowStep>
       </div>

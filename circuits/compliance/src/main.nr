@@ -110,6 +110,14 @@ fn main(
     amount:               pub Field,   // slot 4
     compliance_nullifier: pub Field,   // slot 5
 
+    // Layer binding: the on-chain KYC attestation UID (AttestProtocol), split into
+    // two 16-byte halves because a 32-byte keccak UID can exceed the BN254 field
+    // modulus. Publishing them ties THIS proof to a specific attestation; the pool
+    // checks pub_signals[6]/[7] equal the kyc_attestation_uid it verifies on-chain,
+    // so the ZK compliance layer and the attestation layer reference the same UID.
+    attestation_uid_hi:   pub Field,   // slot 6 (top 16 bytes of the UID)
+    attestation_uid_lo:   pub Field,   // slot 7 (bottom 16 bytes of the UID)
+
     // --- Private witness ---
     secret_salt:      Field,
     kyc_tier:         Field,
@@ -119,6 +127,12 @@ fn main(
     merkle_index:     Field,
     depositor_pubkey: Field,   // ownerField; makes nullifier unique per depositor
 ) {
+    // Keep the UID halves as genuine, non-optimizable public inputs and enforce
+    // the 16-byte split domain. The cross-layer binding itself is enforced by the
+    // pool, which compares these public signals to the attestation UID it
+    // independently verifies via AttestProtocol.
+    attestation_uid_hi.assert_max_bit_size::<128>();
+    attestation_uid_lo.assert_max_bit_size::<128>();
     // 1. Merkle membership: KYC attribute leaf is in the ComplianceRegistry tree.
     let leaf = attribute_leaf(secret_salt, kyc_tier, sanctioned_flag, country_code);
     let computed_root = compute_merkle_root(leaf, merkle_index as u32, merkle_siblings);

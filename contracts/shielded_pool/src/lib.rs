@@ -67,6 +67,13 @@ pub enum PoolError {
     /// depositor's attestation must encode the sending jurisdiction/tier and the
     /// recipient's must encode the receiving jurisdiction/tier.
     KycAttestationValueMismatch = 14,
+    /// The compliance ZK proof was not bound to the KYC attestation being
+    /// verified: the attestation UID (split into two 16-byte halves) supplied as
+    /// public signals [6]/[7] of the compliance proof does not equal the
+    /// kyc_attestation_uid checked against AttestProtocol. This cryptographically
+    /// ties the ZK compliance layer to the on-chain attestation layer — a valid
+    /// proof for a different (or no) attestation is rejected.
+    ComplianceAttestationUnbound = 15,
 }
 
 #[contracttype]
@@ -313,6 +320,37 @@ impl ShieldedPool {
         Ok(())
     }
 
+    /// Cross-layer binding: assert the compliance proof was generated for the
+    /// SAME attestation the pool verifies on-chain. The 32-byte `attestation_uid`
+    /// is split into two 16-byte halves and published by the circuit as signals
+    /// [6] (top 16 bytes) and [7] (bottom 16 bytes), each as a field whose value
+    /// sits in the low 16 bytes of the 32-byte big-endian encoding. We reconstruct
+    /// the expected halves from `attestation_uid` and compare.
+    fn assert_compliance_binds_uid(
+        env: &Env,
+        compliance_pub_signals: &Bytes,
+        attestation_uid: &BytesN<32>,
+    ) -> Result<(), PoolError> {
+        let uid = attestation_uid.to_array();
+
+        let mut hi = [0u8; 32];
+        let mut lo = [0u8; 32];
+        for i in 0..16usize {
+            hi[16 + i] = uid[i];       // top 16 bytes  -> low 16 bytes of field
+            lo[16 + i] = uid[16 + i];  // bottom 16 bytes
+        }
+        let expected_hi = BytesN::from_array(env, &hi);
+        let expected_lo = BytesN::from_array(env, &lo);
+
+        let proof_hi = Self::extract_signal(env, compliance_pub_signals, 6);
+        let proof_lo = Self::extract_signal(env, compliance_pub_signals, 7);
+
+        if proof_hi != expected_hi || proof_lo != expected_lo {
+            return Err(PoolError::ComplianceAttestationUnbound);
+        }
+        Ok(())
+    }
+
     /// Assert that signal[0] of a shielded pub_signals blob equals the
     /// current note-commitment tree root stored in this pool (Gap 3 fix).
     fn assert_pool_root_matches(
@@ -535,6 +573,11 @@ impl ShieldedPool {
             env.storage().instance().get(&DataKey::KycValueSend).unwrap();
         Self::verify_kyc_attestation(&env, &depositor, &kyc_attestation_uid, &expected_send)?;
 
+        // Layer binding: the compliance proof must be cryptographically tied to
+        // THIS attestation (its UID is a public input of the proof). Without this,
+        // the KYC gate and the ZK compliance proof would be independent checks.
+        Self::assert_compliance_binds_uid(&env, &compliance_pub_signals, &kyc_attestation_uid)?;
+
         // The new tree root must be attested by the operator (anti-forged-root).
         Self::assert_root_signed(&env, &new_root, &root_signature);
 
@@ -676,6 +719,10 @@ impl ShieldedPool {
         let expected_receive: String =
             env.storage().instance().get(&DataKey::KycValueReceive).unwrap();
         Self::verify_kyc_attestation(&env, &recipient, &kyc_attestation_uid, &expected_receive)?;
+
+        // Layer binding: the off-ramp compliance proof must be tied to THIS
+        // attestation (its UID is a public input of the proof).
+        Self::assert_compliance_binds_uid(&env, &compliance_pub_signals, &kyc_attestation_uid)?;
 
         // The new tree root must be attested by the operator (anti-forged-root).
         Self::assert_root_signed(&env, &new_root, &root_signature);
@@ -980,5 +1027,59 @@ mod test {
         );
         store(&f, &att);
         assert_eq!(run(&f), Err(PoolError::KycAttestationValueMismatch));
+    }
+
+    // ── Layer-binding tests: compliance proof must commit to the attestation UID ──
+
+    /// Build an encoded compliance pub_signals blob with `n` signals where the
+    /// signals at index 6 and 7 carry the supplied 32-byte halves.
+    fn build_signals_with_uid_halves(env: &Env, hi: &[u8; 32], lo: &[u8; 32]) -> Bytes {
+        let mut data = Bytes::new(env);
+        data.extend_from_array(&[0u8, 0u8, 0u8, 8u8]); // u32be count = 8
+        let zero = [0u8; 32];
+        for _ in 0..6 {
+            data.extend_from_array(&zero);
+        }
+        data.extend_from_array(hi);
+        data.extend_from_array(lo);
+        data
+    }
+
+    /// Split a 32-byte UID the same way the circuit/issuer do: low 16 bytes of each
+    /// half-field carry the top/bottom 16 bytes of the UID.
+    fn uid_halves(uid: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+        let mut hi = [0u8; 32];
+        let mut lo = [0u8; 32];
+        for i in 0..16 {
+            hi[16 + i] = uid[i];
+            lo[16 + i] = uid[16 + i];
+        }
+        (hi, lo)
+    }
+
+    #[test]
+    fn compliance_bound_to_matching_uid_passes() {
+        let env = Env::default();
+        let uid_arr = [9u8; 32];
+        let uid = BytesN::from_array(&env, &uid_arr);
+        let (hi, lo) = uid_halves(&uid_arr);
+        let signals = build_signals_with_uid_halves(&env, &hi, &lo);
+        assert_eq!(
+            ShieldedPool::assert_compliance_binds_uid(&env, &signals, &uid),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn compliance_bound_to_wrong_uid_rejected() {
+        let env = Env::default();
+        let uid = BytesN::from_array(&env, &[9u8; 32]);
+        // Proof commits to a DIFFERENT uid than the one being verified.
+        let (hi, lo) = uid_halves(&[7u8; 32]);
+        let signals = build_signals_with_uid_halves(&env, &hi, &lo);
+        assert_eq!(
+            ShieldedPool::assert_compliance_binds_uid(&env, &signals, &uid),
+            Err(PoolError::ComplianceAttestationUnbound)
+        );
     }
 }

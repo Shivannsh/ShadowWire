@@ -25,9 +25,9 @@ const mono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ShadowWire — Private Cross-Border Settlement",
+  title: "ShadowWire: ZK-Shielded Cross-Border Remittance",
   description:
-    "Shielded remittance on Stellar. Fiat on-ramp, a private corridor, and compliance proofs at every edge — transfer amounts stay off the public ledger, surfacing only at the regulated fiat edges.",
+    "Real banks in, real banks out, zero visibility in between. ShadowWire is a shielded remittance corridor on Stellar, SEP-24 fiat anchors, Groth16 zero-knowledge proofs, and AttestProtocol KYC on every transaction.",
 };
 
 export default function RootLayout({

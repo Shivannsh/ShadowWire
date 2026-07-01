@@ -101,7 +101,7 @@ async function tryRecoverFromAnchorLookupError(params: {
   onStatus?: (message: string) => void;
 }): Promise<Sep24Transaction | null> {
   const { anchor, token, transactionId, account, onStatus } = params;
-  onStatus?.("Anchor reported a tx lookup error — rechecking status…");
+  onStatus?.("Anchor reported a tx lookup error, rechecking status…");
 
   // Give testanchor a moment to reconcile Soroban SAC transfers.
   for (let i = 0; i < 5; i++) {
@@ -226,21 +226,51 @@ function authHeaders(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}` };
 }
 
+export interface Sep24CustomerInfo {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}
+
+function appendInteractiveUrlParams(
+  url: string,
+  params: Record<string, string | undefined>
+): string {
+  try {
+    const u = new URL(url);
+    for (const [key, value] of Object.entries(params)) {
+      if (value && !u.searchParams.has(key)) u.searchParams.set(key, value);
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 async function startInteractiveTransaction(
   anchor: AnchorConfig,
   token: string,
   kind: "deposit" | "withdraw",
   account: string,
-  amount?: string
+  opts?: { amount?: string; customer?: Sep24CustomerInfo }
 ): Promise<Sep24Transaction> {
   // SEP-24: POST with multipart/form-data (testanchor rejects url-encoded).
-  // We intentionally omit `amount` — the anchor's interactive popup collects it,
-  // and we read the final amount back from the transaction response.
+  //
+  // IMPORTANT: do NOT include `amount` in the POST body. Testanchor validates
+  // amounts upfront against its per-asset limits and returns a 400 if the value
+  // exceeds them - even when the user hasn't confirmed anything yet. Instead we
+  // only append `amount` to the returned interactive URL as a query param so the
+  // anchor's own form pre-fills it without triggering the server-side guard.
+  //
+  // SEP-9 identity fields (first_name, last_name, email_address) are safe in the
+  // POST body and are used to pre-fill the anchor's KYC form.
   const body = new FormData();
   body.append("asset_code", anchor.assetCode);
   body.append("asset_issuer", anchor.assetIssuer);
   body.append("account", account);
-  void amount; // kept in signature for future anchors that accept it
+  if (opts?.customer?.firstName) body.append("first_name", opts.customer.firstName);
+  if (opts?.customer?.lastName) body.append("last_name", opts.customer.lastName);
+  if (opts?.customer?.email) body.append("email_address", opts.customer.email);
 
   const path =
     kind === "deposit"
@@ -249,7 +279,7 @@ async function startInteractiveTransaction(
 
   const res = await fetch(path, {
     method: "POST",
-    // Do NOT set Content-Type — the browser sets it automatically with the
+    // Do NOT set Content-Type - the browser sets it automatically with the
     // correct multipart boundary when the body is a FormData instance.
     headers: authHeaders(token),
     body,
@@ -260,7 +290,16 @@ async function startInteractiveTransaction(
     throw new Error(`SEP-24 ${kind} init failed (${res.status}): ${text}`);
   }
 
-  return (await res.json()) as Sep24Transaction;
+  const tx = (await res.json()) as Sep24Transaction;
+  if (tx.url) {
+    tx.url = appendInteractiveUrlParams(tx.url, {
+      amount: opts?.amount,
+      first_name: opts?.customer?.firstName,
+      last_name: opts?.customer?.lastName,
+      email_address: opts?.customer?.email,
+    });
+  }
+  return tx;
 }
 
 export async function pollSep24Transaction(
@@ -367,8 +406,15 @@ async function buildWithdrawPaymentXdr(
 /**
  * Poll a SEP-24 withdrawal until terminal state. When the anchor reaches
  * `pending_user_transfer_start`, prompt the wallet to send SRT (+ memo) to the
- * anchor — this step was previously missing, leaving the flow stuck forever.
+ * anchor, this step was previously missing, leaving the flow stuck forever.
  */
+interface Sep24WithdrawPollResult {
+  transaction: Sep24Transaction;
+  paymentHash?: string;
+  /** SRT was sent on-chain; anchor hasn't flipped to completed yet */
+  anchorPending?: boolean;
+}
+
 async function pollSep24Withdraw(
   anchor: AnchorConfig,
   token: string,
@@ -376,11 +422,21 @@ async function pollSep24Withdraw(
   account: string,
   signXdr: (xdr: string) => Promise<string>,
   onStatus?: (message: string) => void,
-  maxAttempts = 240
-): Promise<Sep24Transaction> {
+  opts?: {
+    /** Called as soon as the on-chain anchor payment is submitted. */
+    onPaymentSubmitted?: (hash: string) => void;
+    maxAttempts?: number;
+    /** After payment lands on-chain, only poll the anchor this many times (~2s each). */
+    postPaymentAttempts?: number;
+  }
+): Promise<Sep24WithdrawPollResult> {
+  const maxAttempts = opts?.maxAttempts ?? 240;
+  const postPaymentAttempts = opts?.postPaymentAttempts ?? 15;
   const url = `${proxyUrl(anchor.transferServer)}/transaction?id=${transactionId}`;
   let paymentSubmitted = false;
   let paymentHash = "";
+  let lastTx: Sep24Transaction | null = null;
+  let postPaymentPolls = 0;
 
   for (let i = 0; i < maxAttempts; i++) {
     const res = await fetch(url, { headers: authHeaders(token) });
@@ -391,15 +447,19 @@ async function pollSep24Withdraw(
     const tx = normalizeWithdrawTx(
       json.transaction ?? (json as unknown as Sep24Transaction)
     );
+    lastTx = tx;
     // Once we've paid the anchor on-chain, the anchor still reports
     // `pending_user_transfer_start` until its payment observer credits the
-    // incoming SRT. Don't revert the status to the pre-payment message — that
+    // incoming SRT. Don't revert the status to the pre-payment message - that
     // makes a successful, paid withdrawal look frozen. Show that we're waiting
     // on the anchor (a third-party testnet service) instead.
     if (paymentSubmitted) {
       onStatus?.(
-        `Payment sent to anchor${paymentHash ? ` (${paymentHash.slice(0, 12)}…)` : ""} — ` +
-        `waiting for the testnet anchor to credit fiat (may take a few minutes)…`
+        paymentHash
+          ? `Off-ramp payment confirmed on-chain (${paymentHash.slice(0, 12)}…). ` +
+            `You can close the anchor popup, the testnet bank UI does not auto-refresh. ` +
+            `Simulated fiat credit may take a while on SDF's reference server.`
+          : `Off-ramp payment confirmed on-chain. You can close the anchor popup.`
       );
     } else {
       onStatus?.(`Anchor status: ${tx.status}`);
@@ -411,15 +471,16 @@ async function pollSep24Withdraw(
     ) {
       paymentSubmitted = true; // only one Freighter prompt per withdrawal
       onStatus?.(
-        `Send ${tx.amount_in ?? "?"} ${anchor.assetCode} to anchor — approve in Freighter…`
+        `Send ${tx.amount_in ?? "?"} ${anchor.assetCode} to anchor, approve in Freighter…`
       );
       try {
         const xdr = await buildWithdrawPaymentXdr(account, anchor, tx);
         const signed = await signXdr(xdr);
         const result = await submitTransaction(signed);
         paymentHash = result.hash;
+        opts?.onPaymentSubmitted?.(result.hash);
         onStatus?.(
-          `Payment submitted (${result.hash.slice(0, 12)}…) — waiting for anchor…`
+          `Payment submitted (${result.hash.slice(0, 12)}…), confirming on-chain…`
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -436,25 +497,129 @@ async function pollSep24Withdraw(
       tx.status === "error" ||
       tx.status === "refunded"
     ) {
-      return tx;
+      return { transaction: tx, paymentHash: paymentHash || undefined };
+    }
+
+    // Once we've paid on-chain, don't block the UI for the slow testnet observer.
+    if (paymentSubmitted) {
+      postPaymentPolls++;
+      if (postPaymentPolls >= postPaymentAttempts) {
+        onStatus?.(
+          `Off-ramp complete on your side${paymentHash ? ` (${paymentHash.slice(0, 12)}…)` : ""}. ` +
+          `The SDF testnet anchor has not marked this "completed" yet, that is normal. ` +
+          `Close the anchor popup; no further wallet action needed.`
+        );
+        return {
+          transaction: lastTx!,
+          paymentHash: paymentHash || undefined,
+          anchorPending: true,
+        };
+      }
     }
 
     await new Promise((r) => setTimeout(r, 2000));
   }
 
-  if (paymentSubmitted) {
-    throw new Error(
-      `SRT payment to the anchor succeeded on-chain` +
-      `${paymentHash ? ` (${paymentHash})` : ""}, but the testnet anchor has not ` +
-      `marked the withdrawal completed yet. This is the third-party anchor crediting ` +
-      `fiat and is outside this app — the off-ramp payment itself is done. Check the ` +
-      `anchor's status later; no further action is needed in the wallet.`
+  if (paymentSubmitted && lastTx) {
+    onStatus?.(
+      `Off-ramp payment sent on-chain${paymentHash ? ` (${paymentHash.slice(0, 12)}…)` : ""}. ` +
+      `The testnet anchor is still crediting fiat, your wallet work is done.`
     );
+    return {
+      transaction: lastTx,
+      paymentHash: paymentHash || undefined,
+      anchorPending: true,
+    };
   }
   throw new Error(
     "SEP-24 withdrawal timed out before any payment was sent. If the status was " +
     "pending_user_transfer_start, ensure the SRT payment to the anchor was signed in Freighter."
   );
+}
+
+/**
+ * Headless SEP-24 form submission: calls anchor-reference-server directly
+ * so the user never sees the popup.
+ *
+ * Flow:
+ *   1. Extract `?token=<SEP-10 JWT>` from the interactive URL.
+ *   2. POST /start with that token → get a `sessionId`.
+ *   3. POST /submit with the sessionId + form fields.
+ *
+ * Field names used by the testanchor reference UI: name, surname, email, amount.
+ *
+ * Returns true if the submission succeeded; callers fall back to popup on failure.
+ */
+async function tryHeadlessSubmit(
+  interactiveUrl: string,
+  fields: {
+    amount?: string;
+    name?: string;
+    surname?: string;
+    email?: string;
+    bank?: string;
+    account?: string;
+  }
+): Promise<boolean> {
+  try {
+    const u = new URL(interactiveUrl);
+
+    // The interactive URL carries the raw SEP-10 JWT as ?token=...
+    // If it already has a session_token we can use that directly.
+    const rawToken =
+      u.searchParams.get("token") ||
+      u.searchParams.get("session_token") ||
+      u.searchParams.get("session_");
+    if (!rawToken) return false;
+
+    // Exchange the SEP-10 JWT for a reference-server session ID.
+    let sessionToken = rawToken;
+    if (u.searchParams.has("token") && !u.searchParams.has("session_token")) {
+      const startRes = await fetch("/api/anchor-ref/start", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${rawToken}` },
+      });
+      if (!startRes.ok) return false;
+      const { sessionId } = await startRes.json() as { sessionId?: string };
+      if (!sessionId) return false;
+      sessionToken = sessionId;
+    }
+
+    const body = JSON.stringify({
+      amount:  fields.amount  ?? "",
+      name:    fields.name    ?? "",
+      surname: fields.surname ?? "",
+      email:   fields.email   ?? "",
+      ...(fields.bank    ? { bank: fields.bank }       : {}),
+      ...(fields.account ? { account: fields.account } : {}),
+    });
+
+    const res = await fetch("/api/anchor-ref/submit", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sessionToken}`,
+      },
+      body,
+    });
+
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** @deprecated Use tryHeadlessSubmit */
+async function tryHeadlessDeposit(
+  interactiveUrl: string,
+  opts: { amount?: string; customer?: Sep24CustomerInfo }
+): Promise<boolean> {
+  return tryHeadlessSubmit(interactiveUrl, {
+    amount:  opts.amount,
+    name:    opts.customer?.firstName,
+    surname: opts.customer?.lastName,
+    email:   opts.customer?.email,
+  });
 }
 
 export function openSep24Popup(url: string, name = "sep24"): Window | null {
@@ -469,15 +634,44 @@ export function openSep24Popup(url: string, name = "sep24"): Window | null {
   );
 }
 
+/**
+ * Opens a 1×1 off-screen placeholder popup synchronously (during a user-gesture
+ * handler) to reserve the popup slot and avoid popup blockers. After async work
+ * finishes, call revealSep24Popup to resize and navigate it to the real URL.
+ */
+export function reserveSep24Popup(name = "sep24"): Window | null {
+  return window.open("about:blank", name, "width=1,height=1,left=-200,top=-200");
+}
+
+export function revealSep24Popup(popup: Window | null, url: string): void {
+  if (!popup || popup.closed) return;
+  const width = 500;
+  const height = 700;
+  const left = window.screenX + (window.outerWidth - width) / 2;
+  const top  = window.screenY + (window.outerHeight - height) / 2;
+  try {
+    popup.resizeTo(width, height);
+    popup.moveTo(left, top);
+    popup.location.href = url;
+    popup.focus();
+  } catch {
+    // ignore cross-origin errors
+  }
+}
+
 export interface Sep24FlowResult {
   transaction: Sep24Transaction;
   popupClosed: boolean;
+  /** SRT sent to anchor; third-party anchor hasn't marked completed yet */
+  anchorPending?: boolean;
+  paymentHash?: string;
 }
 
 export async function runSep24Deposit(params: {
   account: string;
   signXdr: (xdr: string) => Promise<string>;
   amount?: string;
+  customer?: Sep24CustomerInfo;
   domain?: string;
   onStatus?: (message: string) => void;
   /** Pre-opened blank popup (opened synchronously on user click to avoid popup blockers). */
@@ -494,24 +688,39 @@ export async function runSep24Deposit(params: {
     token,
     "deposit",
     params.account,
-    params.amount
+    { amount: params.amount, customer: params.customer }
   );
 
   if (!initiated.url) {
     throw new Error("SEP-24 deposit did not return an interactive URL");
   }
 
-  // Redirect the pre-opened popup (or open a new one if none was provided).
-  params.onStatus?.("Complete KYC in the anchor popup…");
-  let popup: Window | null;
-  if (params.popup && !params.popup.closed) {
-    params.popup.location.href = initiated.url;
-    popup = params.popup;
+  // Try headless submission first: call anchor-reference-server /submit directly
+  // so the user never sees the anchor popup. Falls back to popup if it fails.
+  params.onStatus?.("Submitting deposit details to anchor…");
+  const headless = await tryHeadlessDeposit(initiated.url, {
+    amount: params.amount,
+    customer: params.customer,
+  });
+
+  let popup: Window | null = null;
+
+  if (!headless) {
+    // Headless failed - fall back to the popup.
+    params.onStatus?.("Opening anchor for manual KYC…");
+    if (params.popup && !params.popup.closed) {
+      params.popup.location.href = initiated.url;
+      popup = params.popup;
+    } else {
+      popup = openSep24Popup(initiated.url);
+    }
   } else {
-    popup = openSep24Popup(initiated.url);
+    // Close the pre-opened blank tab - we won't need it.
+    try { params.popup?.close(); } catch { /* ignore */ }
+    params.onStatus?.("Deposit details submitted, waiting for anchor to confirm…");
   }
 
-  // Poll immediately — do not wait for the popup to close. Users often leave the
+  // Poll immediately - do not wait for the popup to close. Users often leave the
   // anchor "completed" screen open, which previously blocked the main page forever.
   params.onStatus?.("Waiting for anchor to complete deposit…");
   let transaction = await pollSep24Transaction(
@@ -536,7 +745,7 @@ export async function runSep24Deposit(params: {
       });
       if (recovered) {
         params.onStatus?.(
-          `Deposit confirmed on-chain (${recovered.amount_out ?? "?"} ${anchor.assetCode}) — anchor UI showed a lookup error`
+          `Deposit confirmed on-chain (${recovered.amount_out ?? "?"} ${anchor.assetCode}), anchor UI showed a lookup error`
         );
         transaction = recovered;
       }
@@ -563,10 +772,15 @@ export async function runSep24Withdraw(params: {
   account: string;
   signXdr: (xdr: string) => Promise<string>;
   amount: string;
+  customer?: Sep24CustomerInfo;
   domain?: string;
   onStatus?: (message: string) => void;
-  /** Pre-opened blank popup (opened synchronously on user click to avoid popup blockers). */
-  popup?: Window | null;
+  /**
+   * A 1×1 placeholder popup opened synchronously on the button click.
+   * Pass this so the browser does not block the popup. It will be resized
+   * and navigated to the anchor URL after Freighter signing completes.
+   */
+  reservedPopup?: Window | null;
 }): Promise<Sep24FlowResult> {
   const domain = params.domain ?? TEST_ANCHOR_DOMAIN;
   params.onStatus?.("Authenticating with anchor (SEP-10)…");
@@ -579,34 +793,44 @@ export async function runSep24Withdraw(params: {
     token,
     "withdraw",
     params.account,
-    params.amount
+    { amount: params.amount, customer: params.customer }
   );
 
   if (!initiated.url) {
     throw new Error("SEP-24 withdrawal did not return an interactive URL");
   }
 
-  params.onStatus?.("Complete withdrawal in the anchor popup…");
+  // Freighter has signed - now reveal the anchor popup with the real URL.
+  params.onStatus?.("Opening bank anchor for withdrawal details…");
   let popup: Window | null;
-  if (params.popup && !params.popup.closed) {
-    params.popup.location.href = initiated.url;
-    popup = params.popup;
+  if (params.reservedPopup && !params.reservedPopup.closed) {
+    revealSep24Popup(params.reservedPopup, initiated.url);
+    popup = params.reservedPopup;
   } else {
     popup = openSep24Popup(initiated.url);
   }
 
   params.onStatus?.("Waiting for anchor to complete withdrawal…");
-  const transaction = await pollSep24Withdraw(
+  const polled = await pollSep24Withdraw(
     anchor,
     token,
     initiated.id,
     params.account,
     params.signXdr,
-    params.onStatus
+    params.onStatus,
+    {
+      onPaymentSubmitted: () => {
+        // The reference UI status page does not refresh - close it so the user
+        // is not stuck staring at "waiting on the user to transfer funds".
+        if (popup && !popup.closed) {
+          try { popup.close(); } catch { /* ignore */ }
+        }
+      },
+    }
   );
 
-  if (transaction.status === "error") {
-    throw new Error(formatSep24Error("withdraw", transaction));
+  if (polled.transaction.status === "error") {
+    throw new Error(formatSep24Error("withdraw", polled.transaction));
   }
 
   const popupClosed = popup?.closed ?? false;
@@ -618,7 +842,12 @@ export async function runSep24Withdraw(params: {
     }
   }
 
-  return { transaction, popupClosed };
+  return {
+    transaction: polled.transaction,
+    popupClosed,
+    anchorPending: polled.anchorPending,
+    paymentHash: polled.paymentHash,
+  };
 }
 
 export async function getSrtAsset(): Promise<StellarSdk.Asset> {

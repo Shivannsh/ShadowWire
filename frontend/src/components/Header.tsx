@@ -7,8 +7,8 @@ import { Wordmark } from "./ui/Logo";
 
 const nav = [
   { href: "/", label: "Overview" },
-  { href: "/alice", label: "Buyer" },
-  { href: "/bob", label: "Seller" },
+  { href: "/sender", label: "Sender" },
+  { href: "/recipient", label: "Recipient" },
 ];
 
 export function Header() {

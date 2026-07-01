@@ -29,7 +29,7 @@ SEP-24 deposit (Alice) → visible balance → compliance ZK proof → ShieldedP
 | Fiat edges | SEP-24 via `testanchor.stellar.org` (SRT) |
 | Demo UI | Next.js + Freighter (`frontend/`) |
 
-### Compliance: three layers (honest)
+### Compliance: four layers (honest)
 
 ShadowWire enforces compliance with three independent, on-chain-verifiable layers — no hardcoded KYC flags:
 
@@ -38,10 +38,11 @@ ShadowWire enforces compliance with three independent, on-chain-verifiable layer
    - **Revocation is demonstrable end-to-end.** The authority can revoke a wallet's attestation (`POST /api/kyc/revoke`, delegated BLS revocation). `scripts/revoke-kyc.mjs` shows the gate open → revoke → closed: a deposit that passes the gate before revocation fails with `KycAttestationRevoked` (#12) after (runs in simulation, so no SRT funding needed).
 2. **Edge compliance ZK proof (Groth16/BN254).** A Noir circuit proves KYC-tree membership + corridor/amount limits without revealing the underlying attributes; the proof is verified on-chain via `pairing_check`. Its `amount` signal is bound to the actual deposit/withdraw amount.
 3. **Operator-signed Merkle roots (ed25519).** Every new commitment-tree root must be signed by the registered operator key, closing the prover-supplied-root vulnerability (the contract cannot recompute a Poseidon tree on-chain today).
+4. **Layer binding — the ZK proof is cryptographically tied to the attestation (LIVE).** Previously the KYC gate (layer 1) and the compliance proof (layer 2) were *independent* checks: a valid proof for any wallet plus any valid attestation would pass. v12 closes that gap. The `compliance` circuit now publishes the attestation UID as two 16-byte public-input halves (`attestation_uid_hi/lo`, slots `[6]/[7]` — split because a 32-byte keccak UID can exceed the BN254 field modulus, and range-checked so they can't be optimized away). On `deposit()`/`withdraw()` the pool reconstructs those halves from the `kyc_attestation_uid` it verifies against AttestProtocol and requires an exact match; a proof bound to any other UID is rejected with `ComplianceAttestationUnbound` (#15). The gate, the claim, and the ZK proof now all reference the *same* on-chain attestation.
 
-The pool that wires all three together is **v11** (`scripts/deploy-pool-v11.mjs`), which adds on-chain enforcement of the attestation claim per corridor edge. v10 (existence-only KYC gate) and v9 (operator-signed roots, no on-chain KYC) remain deployable as rollbacks.
+The pool that wires all four together is **v12** (`scripts/deploy-pool-v12.mjs`). Because the compliance circuit gained two public inputs, its verification key changed; v12 deploys a **fresh** 8-signal compliance verifier (8 public signals) and leaves v11's 6-signal verifier untouched, so v11/v10/v9 remain deployable as clean rollbacks.
 
-**Layer binding (proven feasible, not yet wired).** A fourth hardening — binding the ZK compliance proof to the specific attestation UID — has been validated at the circuit level: the `compliance` circuit accepts the 32-byte UID as two 16-byte public-input halves (`attestation_uid_hi/lo`, since a keccak UID can exceed the BN254 field modulus), recompiles, and the Groth16 proof verifies with 8 public signals. Full activation (regenerate on-chain VK, pool v12 comparing `pub_signals[6]/[7]` to the verified UID, issuer threads the UID into proving) is deferred to avoid destabilizing the working verifier/pool the day before the deadline.
+**Live evidence (testnet).** `scripts/bind-check.mjs` proves the binding end-to-end in simulation (no SRT funding needed): a deposit whose compliance proof is bound to the wallet's real attestation UID passes the gate **and** the binding, while the same deposit with a proof bound to a *different* UID is rejected on-chain with `Error(Contract, #15)`. Revocation is still demonstrable via `scripts/revoke-kyc.mjs` (gate open → revoke → `KycAttestationRevoked` #12).
 
 ### Proof pipeline
 

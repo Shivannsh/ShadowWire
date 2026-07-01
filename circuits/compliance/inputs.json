@@ -12,5 +12,7 @@
   "min_kyc_tier":         "1",
   "max_amount":           "1000000",
   "amount":               "500",
-  "compliance_nullifier": "0x0132bdafb7b4f31ff9c9cff077bec0bdcb97b20d15efb781a66b3343a1826494"
+  "compliance_nullifier": "0x0132bdafb7b4f31ff9c9cff077bec0bdcb97b20d15efb781a66b3343a1826494",
+  "attestation_uid_hi":   "0xe2f2a8870000000000000000000000aa",
+  "attestation_uid_lo":   "0x000000000000000000000000000000bb"
 }

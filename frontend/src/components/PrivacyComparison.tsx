@@ -3,7 +3,7 @@ import { EyeOffIcon, ShieldIcon } from "./ui/icons";
 export function PrivacyComparison() {
   return (
     <div className="grid gap-5 md:grid-cols-2">
-      {/* Transparent — exposed */}
+      {/* Transparent, exposed */}
       <div className="panel relative overflow-hidden p-6">
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-px"
@@ -26,12 +26,13 @@ export function PrivacyComparison() {
           <span className="mt-0.5 text-danger">
             <EyeOffIcon size={14} />
           </span>
-          Readable by anyone with a block explorer — competitors, indexers, and
-          counterparties alike.
+          Every competitor, indexer, and block explorer reads the full payment,
+          sender, recipient, amount, and memo. Your remittance strategy is public
+          intelligence.
         </p>
       </div>
 
-      {/* Shielded — calm */}
+      {/* Shielded, calm */}
       <div className="panel relative overflow-hidden p-6">
         <div
           className="pointer-events-none absolute inset-x-0 top-0 h-px"
@@ -49,8 +50,8 @@ export function PrivacyComparison() {
           <span className="text-xs text-fg-muted">ShadowWire corridor</span>
         </div>
         <div className="space-y-px">
-          <Row label="From" value="—" tone="hidden" />
-          <Row label="To" value="—" tone="hidden" />
+          <Row label="From" value="..." tone="hidden" />
+          <Row label="To" value="..." tone="hidden" />
           <Row label="Amount" value="████████" tone="hidden" highlight />
           <Row label="Nullifier" value="0x7f3a…9c2e" tone="shielded" />
           <Row label="Commitment" value="0xb41d…e801" tone="shielded" last />
@@ -59,9 +60,10 @@ export function PrivacyComparison() {
           <span className="mt-0.5 text-shield">
             <ShieldIcon size={14} />
           </span>
-          In-pool transfers expose no amount or parties — only nullifiers and
-          commitments hit the chain. Amounts surface only at the regulated fiat
-          edges, where each anchor sees just its own leg.
+          In-pool transfers expose only ZK nullifiers and note commitments,
+          verified by Groth16 on Soroban. Banks at each edge see their own fiat
+          leg; the corridor amount in transit stays hidden. KYC enforced by
+          AttestProtocol at every entry and exit.
         </p>
       </div>
     </div>

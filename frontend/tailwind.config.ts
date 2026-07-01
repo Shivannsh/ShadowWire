@@ -30,14 +30,14 @@ const config: Config = {
           muted: "#7b8597",
           faint: "#525c6c",
         },
-        // Signature: cool, trustworthy cyan — restrained, not neon.
+        // Signature: cool, trustworthy cyan - restrained, not neon.
         accent: {
           DEFAULT: "#5bc8ec",
           soft: "#9adcf2",
           deep: "#2a9fce",
           dim: "rgba(91,200,236,0.12)",
         },
-        // Privacy / shielded / success — calm emerald-teal.
+        // Privacy / shielded / success - calm emerald-teal.
         shield: {
           DEFAULT: "#46d6a6",
           deep: "#229f78",

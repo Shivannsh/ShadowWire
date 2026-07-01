@@ -1,40 +1,43 @@
 #!/usr/bin/env node
 /**
- * deploy-pool-v11.mjs
+ * deploy-pool-v12.mjs
  *
- * Deploys shielded_pool v11. Same Tier-C on-chain KYC gate as v10, but the gate
- * now also enforces the attestation's *claim* (verified/tier/country), not just
- * its existence. The pool stores a required attestation value per corridor edge
- * and rejects any attestation whose value does not match byte-for-byte:
- *   - deposit  (sending edge)   → value must equal kyc_value_send    (e.g. country 840)
- *   - withdraw (receiving edge) → value must equal kyc_value_receive (e.g. country 566)
+ * Deploys shielded_pool v12 — the fully-bound corridor. On top of v11's claim
+ * enforcement, v12 cryptographically BINDS the ZK compliance proof to the KYC
+ * attestation: the compliance circuit publishes the attestation UID (two 16-byte
+ * halves, slots [6]/[7]); deposit()/withdraw() reconstruct those halves from the
+ * kyc_attestation_uid they verify against AttestProtocol and require a match.
+ * A valid proof for a different (or no) attestation is rejected with
+ * ComplianceAttestationUnbound (#15). The KYC gate, the claim, and the ZK proof
+ * now all reference the SAME on-chain attestation.
  *
- * What changed vs v10:
- *   - Constructor takes 2 extra args: --kyc_value_send, --kyc_value_receive
- *     (sourced from the issuer's /api/kyc/config so issuer + pool agree exactly).
- *   - New gate error KycAttestationValueMismatch (#14).
+ * Because the compliance circuit gained two public inputs, the compliance
+ * verification key changes. To keep v11 a clean rollback, this script deploys a
+ * FRESH compliance verifier (8-signal VK) instead of mutating the shared one.
+ *
+ * What changed vs v11:
+ *   - Compliance circuit: +2 public inputs (attestation_uid_hi/lo).
+ *   - New on-chain compliance verifier with the 8-signal VK.
+ *   - Pool binds compliance proof ↔ attestation UID; new error #15.
+ *   - Issuer threads the attestation UID into compliance proving.
  *
  * Prereqs (in order):
  *   1. AttestProtocol deployed + KYC schema registered  (scripts/deploy-attest-protocol.mjs)
- *   2. mock-issuer running                               (npm start in mock-issuer)
+ *   2. mock-issuer running (rebuilt)                     (npm start in mock-issuer)
  *   3. Issuer BLS key registered for the authority       (scripts/register-kyc-bls.mjs)
+ *   4. 8-signal compliance artifacts built               (PTAU_POWER=16 bash scripts/run-circuit.sh circuits/compliance)
  *
  * Usage:
- *   node scripts/deploy-pool-v11.mjs            # deploy only
- *   RUN_SELFTEST=1 node scripts/deploy-pool-v11.mjs   # deploy + full corridor self-test
+ *   node scripts/deploy-pool-v12.mjs                 # deploy only
+ *   RUN_SELFTEST=1 node scripts/deploy-pool-v12.mjs  # deploy + corridor self-test
  *
- * Revocation demo (independent, no SRT funding needed): scripts/revoke-kyc.mjs
+ * Binding negative test (no SRT needed): scripts/bind-check.mjs
+ * Revocation demo (no SRT needed):       scripts/revoke-kyc.mjs
  *
- * Rollback: v10 remains deployed; testnet-addresses.json keeps the previous pool
- * id under contracts.shielded_pool_v10_prev. Point the frontend back to it to revert.
+ * Rollback: v11 + its 6-signal compliance verifier remain deployed and untouched;
+ * testnet-addresses.json keeps the previous pool id under shielded_pool_v11_prev
+ * and the previous verifier under compliance_verifier_v11_prev.
  */
-
-// ⚠ SUPERSEDED BY scripts/deploy-pool-v12.mjs.
-// The compliance circuit now publishes the attestation UID (8 public signals) and
-// the shielded_pool wasm enforces the proof↔UID binding. Running THIS script would
-// deploy the binding-enabled wasm against the 6-signal verifier, so deposits would
-// fail. Use deploy-pool-v12.mjs (deploys a fresh 8-signal verifier). Kept only as a
-// rollback reference for the pre-binding (claim-enforcing) pool.
 
 import { spawnSync, execSync } from "node:child_process";
 import fs   from "node:fs";
@@ -183,7 +186,7 @@ async function waitForAttestation(address, maxSecs = 120) {
 
 async function main() {
   log("╔═══════════════════════════════════════════════════════════╗");
-  log("║  ShadowWire — Deploy Pool v11 (KYC claim enforced on-chain) ║");
+  log("║  ShadowWire — Deploy Pool v12 (compliance proof ↔ KYC UID)  ║");
   log("╚═══════════════════════════════════════════════════════════╝");
 
   section("Step 0 — Confirm proving server + read operator + KYC config");
@@ -222,6 +225,18 @@ async function main() {
   log(`  KYC value (send):    ${KYC_VALUE_SEND}`);
   log(`  KYC value (receive): ${KYC_VALUE_RECEIVE}`);
 
+  // The compliance circuit must expose 8 public signals (incl. the UID halves).
+  const compPublic = JSON.parse(
+    fs.readFileSync(`${ROOT}/target/groth16/compliance/proof/public.json`, "utf8")
+  );
+  if (!Array.isArray(compPublic) || compPublic.length !== 8) {
+    throw new Error(
+      `compliance proof has ${compPublic.length ?? "?"} public signals, expected 8. ` +
+      `Rebuild: PTAU_POWER=16 bash scripts/run-circuit.sh circuits/compliance`
+    );
+  }
+  log(`  Compliance public signals: ${compPublic.length} (UID-bound) ✓`);
+
   section("Step 1 — Build shielded_pool WASM");
   const envPath = `${ROOT}/.tools:${process.env.HOME}/.cargo/bin:${process.env.PATH}`;
   execSync(
@@ -230,9 +245,9 @@ async function main() {
   );
   log("  WASM built ✓");
 
-  section("Step 2 — Deploy pool v11 (reusing verifiers + registry + AttestProtocol)");
+  section("Step 2 — Deploy a FRESH compliance verifier (8-signal VK)");
   const addrs = loadAddresses();
-  const COMPLIANCE_V = addrs.contracts.compliance_verifier;
+  const OLD_COMPLIANCE_V = addrs.contracts.compliance_verifier;
   const SHIELDED_V   = addrs.contracts.shielded_transfer_verifier;
   const REGISTRY     = addrs.contracts.compliance_registry;
   const DEPLOYER     = stellar("keys", "public-key", "deployer").trim();
@@ -242,6 +257,44 @@ async function main() {
   if (KYC_AUTHORITY !== DEPLOYER) {
     log(`  ⚠ KYC authority (${KYC_AUTHORITY}) != deployer (${DEPLOYER}); proceeding with configured authority.`);
   }
+
+  // Build verifier wasm (cheap; reuses cache) and deploy a new instance so v11's
+  // 6-signal verifier stays intact for rollback.
+  execSync(
+    `stellar contract build --manifest-path "${ROOT}/contracts/compliance_verifier/Cargo.toml" --package compliance_verifier --optimize`,
+    { stdio: "inherit", env: { ...process.env, PATH: envPath, CARGO_TARGET_DIR: `${ROOT}/contracts/target` } }
+  );
+  const CV_WASM = `${ROOT}/contracts/target/wasm32v1-none/release/compliance_verifier.wasm`;
+  const cvDeployOut = stellarDeployWithRetry([
+    "contract", "deploy", "--wasm", CV_WASM, "--network", NETWORK, "--source-account", "deployer",
+  ]);
+  const COMPLIANCE_V = extractContractId(cvDeployOut);
+  if (!COMPLIANCE_V) throw new Error("Failed to extract new compliance verifier id");
+  log(`  New compliance verifier: ${COMPLIANCE_V}`);
+
+  // Set the 8-signal VK. Freshly-deployed contract instances can take a while to
+  // become readable on RPC, so retry on the transient propagation errors.
+  const vkHex = fs.readFileSync(`${ROOT}/target/groth16/compliance/stellar/vk.hex`, "utf8").replace(/\s+/g, "");
+  let setVkOut;
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    log(`  Waiting 15s for verifier to propagate (attempt ${attempt}/8)…`);
+    await new Promise(r => setTimeout(r, 15000));
+    try {
+      setVkOut = stellar(
+        "contract", "invoke", "--id", COMPLIANCE_V, "--network", NETWORK,
+        "--source-account", "deployer", "--send=yes", "--", "set_vk", "--vk_bytes", vkHex,
+      );
+      break;
+    } catch (err) {
+      const out = String(err?.output ?? err?.message ?? err);
+      if (attempt < 8 && /Contract not found|MissingValue|non-existing value/i.test(out)) {
+        log("  ⚠ verifier not readable yet — retrying…");
+        continue;
+      }
+      throw err;
+    }
+  }
+  log(`  set_vk tx: ${extractTx(setVkOut) ?? "(ok)"}`);
 
   const assetCode   = addrs.anchor?.asset_code;
   const assetIssuer = addrs.anchor?.asset_issuer;
@@ -253,8 +306,9 @@ async function main() {
   );
   if (!ASSET) throw new Error(`Could not derive SAC contract id for ${assetCode}:${assetIssuer}`);
 
+  section("Step 3 — Deploy pool v12 (UID-bound compliance)");
   log(`  Pool asset (SRT SAC): ${ASSET}`);
-  log(`  Compliance verifier:  ${COMPLIANCE_V}`);
+  log(`  Compliance verifier:  ${COMPLIANCE_V} (new, 8-signal)`);
   log(`  Shielded verifier:    ${SHIELDED_V}`);
   log(`  Registry:             ${REGISTRY}`);
 
@@ -280,28 +334,33 @@ async function main() {
     "--kyc_value_receive",   KYC_VALUE_RECEIVE,
   ]);
 
-  const POOL_V11 = extractContractId(deployOut);
-  if (!POOL_V11) throw new Error("Failed to extract pool contract ID from deploy output");
-  log(`  Pool v11 deployed: ${POOL_V11}`);
+  const POOL_V12 = extractContractId(deployOut);
+  if (!POOL_V12) throw new Error("Failed to extract pool contract ID from deploy output");
+  log(`  Pool v12 deployed: ${POOL_V12}`);
 
   const prevPool = addrs.contracts.shielded_pool;
-  // Preserve earlier rollback targets; track the previous v10 separately so
-  // re-running this script never clobbers the v10 fallback.
-  if (!addrs.contracts.shielded_pool_v10_prev) addrs.contracts.shielded_pool_v10_prev = prevPool;
-  addrs.contracts.shielded_pool_v11_prev = prevPool;
-  addrs.contracts.shielded_pool = POOL_V11;
+  // Preserve earlier rollback targets; track the previous v11 separately so
+  // re-running this script never clobbers the v11 fallback.
+  if (!addrs.contracts.shielded_pool_v11_prev) addrs.contracts.shielded_pool_v11_prev = prevPool;
+  addrs.contracts.shielded_pool_v12_prev = prevPool;
+  addrs.contracts.shielded_pool = POOL_V12;
+  // Swap the active compliance verifier to the new 8-signal one, keep old for rollback.
+  if (!addrs.contracts.compliance_verifier_v11_prev) {
+    addrs.contracts.compliance_verifier_v11_prev = OLD_COMPLIANCE_V;
+  }
+  addrs.contracts.compliance_verifier = COMPLIANCE_V;
   addrs.txs = addrs.txs ?? {};
-  addrs.txs.pool_v11_deploy = extractTx(deployOut) ?? "";
+  addrs.txs.pool_v12_deploy = extractTx(deployOut) ?? "";
   saveAddresses(addrs);
-  log(`  testnet-addresses.json updated — active pool: ${POOL_V11}`);
+  log(`  testnet-addresses.json updated — active pool: ${POOL_V12}, verifier: ${COMPLIANCE_V}`);
 
   if (!RUN_SELFTEST) {
-    section("Step 3 — Corridor self-test skipped (set RUN_SELFTEST=1)");
-    log(`  ✅ Pool v11 deployed: on-chain KYC gate now enforces the claim.`);
+    section("Step 4 — Corridor self-test skipped (set RUN_SELFTEST=1)");
+    log(`  ✅ Pool v12 deployed: compliance proof is now bound to the KYC attestation UID.`);
     return;
   }
 
-  section("Step 3 — Full corridor self-test (KYC-gated)");
+  section("Step 4 — Full corridor self-test (KYC-gated + UID-bound)");
   log("  Waiting 20s for pool deployment to propagate on Soroban RPC...");
   await new Promise(r => setTimeout(r, 20000));
 
@@ -319,10 +378,12 @@ async function main() {
   const depositNote = await api("/api/prove/deposit", {
     ownerField: "1", value: AMOUNT, assetId: "3", blinding: "7", secretKey: "13",
   });
-  const depositComp = await api("/api/prove/compliance", { amount: AMOUNT, ownerField: "1" });
+  const depositComp = await api("/api/prove/compliance", {
+    amount: AMOUNT, ownerField: "1", attestationUid: aliceUid,
+  });
   if (!depositNote.rootSignature) throw new Error("issuer did not return rootSignature for deposit");
   const depositOut = stellar(
-    "contract", "invoke", "--id", POOL_V11, "--network", NETWORK,
+    "contract", "invoke", "--id", POOL_V12, "--network", NETWORK,
     "--source-account", "alice", "--send=yes", "--",
     "deposit",
     "--depositor",              ALICE,
@@ -342,7 +403,7 @@ async function main() {
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
       try {
-        const rootOut = stellar("contract", "invoke", "--id", POOL_V11, "--network", NETWORK,
+        const rootOut = stellar("contract", "invoke", "--id", POOL_V12, "--network", NETWORK,
           "--source-account", "alice", "--", "get_root");
         if (rootOut.trim().replace(/^"|"$/g, "").toLowerCase() === expectedRoot.toLowerCase()) break;
       } catch {}
@@ -360,7 +421,7 @@ async function main() {
   if (!transferData.rootSignature) throw new Error("issuer did not return rootSignature for transfer");
   const bobNote = transferData.bobNote;
   const transferOut = stellar(
-    "contract", "invoke", "--id", POOL_V11, "--network", NETWORK,
+    "contract", "invoke", "--id", POOL_V12, "--network", NETWORK,
     "--source-account", "alice", "--send=yes", "--",
     "transfer",
     "--sender",               ALICE,
@@ -379,7 +440,7 @@ async function main() {
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline) {
       try {
-        const rootOut = stellar("contract", "invoke", "--id", POOL_V11, "--network", NETWORK,
+        const rootOut = stellar("contract", "invoke", "--id", POOL_V12, "--network", NETWORK,
           "--source-account", "bob", "--", "get_root");
         if (rootOut.trim().replace(/^"|"$/g, "").toLowerCase() === expectedTransferRoot.toLowerCase()) break;
       } catch {}
@@ -394,10 +455,11 @@ async function main() {
     ownerField: bobNote.owner, value: bobNote.value, assetId: bobNote.assetId,
     blinding: bobNote.blinding, secretKey: bobNote.secretKey,
     recipient: bobNote.owner, commitment: bobNote.commitment,
+    attestationUid: bobUid,
   });
   if (!withdrawData.rootSignature) throw new Error("issuer did not return rootSignature for withdraw");
   const withdrawOut = stellar(
-    "contract", "invoke", "--id", POOL_V11, "--network", NETWORK,
+    "contract", "invoke", "--id", POOL_V12, "--network", NETWORK,
     "--source-account", "bob", "--send=yes", "--",
     "withdraw",
     "--recipient",               BOB,
@@ -415,20 +477,20 @@ async function main() {
   log(`       ✅ Withdraw tx: ${extractTx(withdrawOut)}`);
 
   const finalAddrs = loadAddresses();
-  finalAddrs.txs.corridor_deposit_v11  = extractTx(depositOut)  ?? "";
-  finalAddrs.txs.corridor_transfer_v11 = extractTx(transferOut) ?? "";
-  finalAddrs.txs.corridor_withdraw_v11 = extractTx(withdrawOut) ?? "";
+  finalAddrs.txs.corridor_deposit_v12  = extractTx(depositOut)  ?? "";
+  finalAddrs.txs.corridor_transfer_v12 = extractTx(transferOut) ?? "";
+  finalAddrs.txs.corridor_withdraw_v12 = extractTx(withdrawOut) ?? "";
   finalAddrs.txs.kyc_attest_alice = aliceUid;
   finalAddrs.txs.kyc_attest_bob   = bobUid;
   saveAddresses(finalAddrs);
 
   log("\n╔═══════════════════════════════════════════════════════════╗");
-  log("║  Pool v11 deployed; KYC-gated corridor verified ✅         ║");
+  log("║  Pool v12 deployed; UID-bound corridor verified ✅          ║");
   log("╚═══════════════════════════════════════════════════════════╝");
 }
 
 main().catch(err => {
-  console.error("\n❌  deploy-pool-v11 failed:", err.message ?? err);
+  console.error("\n❌  deploy-pool-v12 failed:", err.message ?? err);
   if (err.output) console.error(err.output);
   process.exit(1);
 });
